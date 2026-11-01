@@ -1,5 +1,5 @@
 //! Window/input lifecycle (winit). Wires input events to renderer and audio.
-//! Renders a parsed BSP world mesh. Mouse look (cursor grabbed); Escape releases the grab, a second Escape or window close exits.
+//! Renders a parsed BSP world mesh. Mouse look uses raw device motion (cursor events are ignored). Escape releases the grab, click or focus re-grabs, Shift+Escape or window close exits.
 
 mod audio;
 mod math;
@@ -24,8 +24,12 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 const USAGE: &str =
     "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0]";
 
-/// Degrees of view rotation per raw mouse count at sensitivity 1.
+/// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
+/// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
+/// (`m_accel`) and `m_filter` default to off and are not implemented.
 const DEGREES_PER_COUNT: f32 = 0.022;
+const SENSITIVITY_STEP: f32 = 0.5;
+const MIN_SENSITIVITY: f32 = 0.5;
 const DEFAULT_SENSITIVITY: f32 = 3.0;
 const MAX_PITCH: f32 = 89.0;
 
@@ -39,6 +43,8 @@ struct App {
     pressed_keys: HashSet<KeyCode>,
     sensitivity: f32,
     mouse_grabbed: bool,
+    /// The first raw motion after a grab can carry a stale jump; drop it.
+    skip_next_motion: bool,
     /// Raw motion accumulated since the last frame; consumed once per redraw.
     mouse_delta: [f64; 2],
     last_frame: Option<Instant>,
@@ -65,6 +71,7 @@ impl App {
             pressed_keys: HashSet::new(),
             sensitivity,
             mouse_grabbed: false,
+            skip_next_motion: false,
             mouse_delta: [0.0; 2],
             last_frame: None,
         }
@@ -88,9 +95,10 @@ impl App {
         let Some(window) = &self.window else { return };
         if grab {
             let grabbed = window
-                .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+                .set_cursor_grab(CursorGrabMode::Confined)
+                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked))
                 .is_ok();
+            self.skip_next_motion = grabbed;
             window.set_cursor_visible(!grabbed);
             self.mouse_grabbed = grabbed;
         } else {
@@ -120,7 +128,7 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("qfusion - WASD move, Space jump, C crouch, Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B beep, Esc quit");
+            .with_title("qfusion - WASD move, Space jump, C crouch, Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B beep, +/- sensitivity, Esc release mouse, Shift+Esc quit");
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -151,6 +159,9 @@ impl ApplicationHandler for App {
         if let DeviceEvent::MouseMotion { delta } = event
             && self.mouse_grabbed
         {
+            if std::mem::take(&mut self.skip_next_motion) {
+                return;
+            }
             self.mouse_delta[0] += delta.0;
             self.mouse_delta[1] += delta.1;
         }
@@ -170,11 +181,22 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Pressed && !event.repeat {
                     match event.logical_key {
                         Key::Named(NamedKey::Escape) => {
-                            if self.mouse_grabbed {
-                                self.set_mouse_grab(false);
-                            } else {
+                            let shift = self.pressed_keys.contains(&KeyCode::ShiftLeft)
+                                || self.pressed_keys.contains(&KeyCode::ShiftRight);
+                            if shift {
                                 event_loop.exit();
+                            } else {
+                                self.set_mouse_grab(false);
                             }
+                        }
+                        Key::Character(ref key) if key == "+" || key == "=" => {
+                            self.sensitivity += SENSITIVITY_STEP;
+                            println!("sensitivity {}", self.sensitivity);
+                        }
+                        Key::Character(ref key) if key == "-" || key == "_" => {
+                            self.sensitivity =
+                                (self.sensitivity - SENSITIVITY_STEP).max(MIN_SENSITIVITY);
+                            println!("sensitivity {}", self.sensitivity);
                         }
                         Key::Character(ref key) if key.eq_ignore_ascii_case("b") => {
                             self.play_sound()
@@ -192,6 +214,7 @@ impl ApplicationHandler for App {
                 self.pressed_keys.clear();
                 self.set_mouse_grab(false);
             }
+            WindowEvent::Focused(true) => self.set_mouse_grab(true),
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
