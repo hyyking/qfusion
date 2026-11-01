@@ -7,6 +7,7 @@ edition = "2024"
 
 [dependencies]
 bsp-poc = { path = "../../tools/bsp-poc" }
+qf-game-poc = { path = "../qf-game-poc" }
 bytemuck = { version = "1.25.2", features = ["derive"] }
 cpal = "0.18.2"
 pollster = "1.0.1"
