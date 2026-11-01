@@ -223,7 +223,7 @@ pub struct PmoveState {
     pub delta_angles: [i16; 3],
     pub stats: PmoveStats,
     pub view_angles: Vec3,
-    pub view_height: i32,
+    pub view_height: f32,
     pub mins: Vec3,
     pub maxs: Vec3,
 }
@@ -246,7 +246,7 @@ impl PmoveState {
                 ..PmoveStats::default()
             },
             view_angles: [0.0; 3],
-            view_height: PLAYER_STAND_VIEWHEIGHT,
+            view_height: PLAYER_STAND_VIEWHEIGHT as f32,
             mins: PLAYER_STAND_MINS,
             maxs: PLAYER_STAND_MAXS,
         }
@@ -1217,7 +1217,7 @@ impl<'a, W: PmoveWorld> Mover<'a, W> {
         self.water_level = 0;
         self.water_type = 0;
 
-        let sample2 = (self.ps.view_height as f32 - self.ps.mins[2]) as i32;
+        let sample2 = (self.ps.view_height - self.ps.mins[2]) as i32;
         let sample1 = sample2 / 2;
         let below = self.origin[2] + self.ps.mins[2];
         let mut point = [self.origin[0], self.origin[1], below + 1.0];
@@ -1581,14 +1581,14 @@ impl<'a, W: PmoveWorld> Mover<'a, W> {
         }
     }
 
-    fn crouch_box(crouch_time: i32) -> (Vec3, Vec3, i32) {
+    fn crouch_box(crouch_time: i32) -> (Vec3, Vec3, f32) {
         let fraction = crouch_time as f32 / CROUCH_TIME as f32;
         let height = PLAYER_STAND_VIEWHEIGHT as f32
             - fraction * (PLAYER_STAND_VIEWHEIGHT - PLAYER_CROUCH_VIEWHEIGHT) as f32;
         (
             lerp(PLAYER_STAND_MINS, fraction, PLAYER_CROUCH_MINS),
             lerp(PLAYER_STAND_MAXS, fraction, PLAYER_CROUCH_MAXS),
-            height as i32,
+            height,
         )
     }
 
@@ -1598,17 +1598,17 @@ impl<'a, W: PmoveWorld> Mover<'a, W> {
                 self.ps.stats.crouch_time = 0;
                 self.ps.maxs = PLAYER_GIB_MAXS;
                 self.ps.mins = PLAYER_GIB_MINS;
-                self.ps.view_height = PLAYER_GIB_VIEWHEIGHT;
+                self.ps.view_height = PLAYER_GIB_VIEWHEIGHT as f32;
                 return;
             }
             PmType::Freeze | PmType::Chasecam => {
                 self.ps.stats.crouch_time = 0;
-                self.ps.view_height = 0;
+                self.ps.view_height = 0.0;
                 return;
             }
             PmType::Spectator => {
                 self.ps.stats.crouch_time = 0;
-                self.ps.view_height = PLAYER_STAND_VIEWHEIGHT;
+                self.ps.view_height = PLAYER_STAND_VIEWHEIGHT as f32;
             }
             PmType::Normal => {}
         }
@@ -1656,7 +1656,7 @@ impl<'a, W: PmoveWorld> Mover<'a, W> {
 
         self.ps.mins = PLAYER_STAND_MINS;
         self.ps.maxs = PLAYER_STAND_MAXS;
-        self.ps.view_height = PLAYER_STAND_VIEWHEIGHT;
+        self.ps.view_height = PLAYER_STAND_VIEWHEIGHT as f32;
     }
 
     fn apply_mouse_angles_clamp(&mut self) {

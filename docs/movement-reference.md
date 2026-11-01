@@ -2,10 +2,9 @@
 
 The harness calls the engine's existing `Pmove` function in
 `source/common/facilities/gs_pmove.cpp`. It does not duplicate movement math or
-read render frames. Its collision callback supplies a flat floor and, where a
-case needs one, an axis-aligned wall; water and ladder cases use the same
-callback interface as the engine. These fixtures are deliberately small and
-are not BSP maps.
+read render frames. Its collision callback supplies simple planes and swept
+axis-aligned boxes; water and ladder cases use the same callback interface as
+the engine. These fixtures are deliberately small and are not BSP maps.
 
 ## Build and run
 
@@ -14,7 +13,7 @@ implementation files directly from the repository. It does not need the
 engine's Qt or third-party runtime dependencies. From the repository root:
 
 ```sh
-cmake -S source -B /tmp/qfusion-pmove-build -DGAME_MODULES_ONLY=ON -DQFUSION_GAME=Warsow
+cmake -S source -B /tmp/qfusion-pmove-build -DGAME_MODULES_ONLY=ON -DSERVER_ONLY=ON -DQFUSION_GAME=Warsow -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build /tmp/qfusion-pmove-build --target pmove_trace -j"$(nproc)"
 ./source/build/pmove_trace."$(uname -m)" > /tmp/pmove.csv
 ./source/build/pmove_trace."$(uname -m)" --rate 125 --case jump_tap > /tmp/jump.csv
@@ -37,15 +36,17 @@ commands), 100 Hz (10 ms), 62.5 Hz (16 ms), 60 Hz (17 ms), 50 Hz (20 ms), and
 30 Hz (33 ms). The engine's command duration is an integer number of
 milliseconds, so 60 Hz and 30 Hz use the nearest whole-millisecond duration;
 the trace records that duration rather than assuming a fractional timestep.
-Use `--rate` and `--case` to select a single combination. Available cases are
-`jump_tap`, `jump_hold`, `air_direction_change`, `dash_wall_hit`,
-`walljump_after_dash`, `land_slow`, `land_fast`, `water_swim`, and
-`ladder_climb`.
+Use `--rate` and `--case` to select a single combination. The harness covers
+tap/held jumps, air steering, dash/wall-jump, slow/medium/fast landings,
+water, ladders, slope walking, a step, stairs, crouch sliding,
+crouch/uncrouch, and a stand-up obstructed by an overhead box. The complete
+case list is kept in sync with `rust/qf-engine/tests/pmove_traces.rs`.
 
 Each command is sampled once, at the beginning of its simulation interval, and
 its input is selected from simulation elapsed milliseconds. No render clock,
-frame callback, or asynchronous input sampling participates. To check
-repeatability with the same binary and platform:
+frame callback, or asynchronous input sampling participates. All cases are
+recorded at all six rates listed above. To check repeatability with the same
+binary and platform:
 
 ```sh
 ./source/build/pmove_trace."$(uname -m)" > /tmp/pmove-a.csv
@@ -66,7 +67,7 @@ scenario's fixed schedule.
 
 ## Comparison contract
 
-Compare these as **exact invariants** for a fixed harness build and case:
+Compare these as **exact invariants** for a fixed harness build, case, and rate:
 
 * The simulation step count, command duration, input schedule, and event
   sequence (event name and parameter).
@@ -74,8 +75,8 @@ Compare these as **exact invariants** for a fixed harness build and case:
   including jump-held, dashing, wall-jumping, and crouch-sliding bits.
 * The ordered touch-entity list and whether a step-height result is zero.
 
-Compare position, velocity, and nonzero step height as **float-tolerance
-values**, not bitwise cross-platform values. Use an initial tolerance of
+Compare position, velocity, view height, and nonzero step height as
+**float-tolerance values**, not bitwise cross-platform values. Use an initial tolerance of
 `0.05` engine units per component for same-compiler reference comparisons;
 increase only with a documented compiler/platform investigation. CSV values
 are rounded for display, so compare unrounded internal values if building a
@@ -155,31 +156,28 @@ checks; `PM_CategorizePosition`, `PM_SlideMove`, and `PM_StepSlideMove`) and
 
 ## Coverage limits and in-game cross-check
 
-The traces include tap-versus-held jump, a mid-air direction change, a dash
-into a wall, a wall-jump attempt after dash release, slow/fast landings, water,
-and ladder fixtures at each rate above. Collision surfaces in this harness are
-simple axis-aligned test planes; it does not load BSP maps and does not model
-sloped brushes, step geometry, moving platforms, contents transitions, or all
-game trigger logic. For those cases the harness must be extended with recorded
-BSP/collision fixtures before its results can serve as a complete movement
-acceptance gate.
+The traces include the scenarios above, all at each rate. These procedural
+plane and swept-box fixtures exercise movement integration with slope, step,
+stairs, and crouch geometry; they do not load BSP maps or claim coverage of
+patch/submodel collision, moving platforms, all contents transitions, or game
+trigger logic. Those remain separate collision/game integration gaps, not
+evidence of a movement integration mismatch.
 
-The independent Rust BSP collision tests are under `rust/qf-engine/tests/bsp.rs`: they check
-parsing, brush traces, and trace outputs without running `Pmove`. Keep those
-results separate from movement traces so a collision mismatch is distinguishable
-from movement integration.
+The independent Rust BSP collision tests are under `rust/qf-engine/tests/bsp.rs`:
+they check parsing, brush traces, and trace outputs without running `Pmove`.
+Keep those results separate from movement traces so a collision mismatch is
+distinguishable from movement integration.
 
-The Rust port is `rust/qf-engine/src/simulation/pmove.rs`. `rust/qf-engine/tests/pmove_traces.rs`
-replays the 125 Hz fixture `rust/qf-engine/tests/fixtures/pmove_125hz.csv` (recorded with this
-harness) through it on a re-implementation of the harness plane world, so it checks movement
-integration only. All nine scenarios (jump tap/hold, air direction change, dash into wall,
-wall jump after dash, slow/fast landing, water swim, ladder climb) match: every exact invariant
-is identical, and the largest deviation is 0.0068 position and 0.0326 velocity units (dash
-scenarios, the legacy x64 build uses the SSE `rsqrtss` estimate where Rust uses an exact
-square root), inside the 0.05 tolerance. `rust/qf-engine/tests/pmove_bsp.rs` walks on BSP
-brush collision (synthetic slab and, when installed, `wbomb1`). Not covered: 62.5 Hz and other
-rates (only 125 Hz is recorded), slopes, steps and crouch sliding (no fixture), patch and
-submodel collision, trigger touching and `PM_UpdateDeltaAngles` (game-side, not ported).
+The Rust port is `rust/qf-engine/src/simulation/pmove.rs`.
+`rust/qf-engine/tests/pmove_traces.rs` replays the multi-rate fixture
+`rust/qf-engine/tests/fixtures/pmove_traces.csv`, recorded with this harness,
+on the same procedural plane/box worlds. These checks isolate movement
+integration from BSP collision; the independent Rust BSP movement tests are
+under `rust/qf-engine/tests/pmove_bsp.rs`. A movement-trace mismatch identifies
+a reference/Rust integration difference; passing traces alongside failing BSP
+tests would instead direct investigation toward collision or its adapter.
+Neither suite covers patch/submodel collision or trigger touching, and
+`PM_UpdateDeltaAngles` remains game-side and unported.
 
 No in-game session or reference BSP assets are available in this repository
 checkout, so live behavior has **not** been independently verified here. To

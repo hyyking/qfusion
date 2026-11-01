@@ -1,24 +1,37 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <common/facilities/gs_public.h>
 
+void Sys_Error( const char *, ... ) {
+	std::abort();
+}
+
 namespace {
 
 struct CollisionPlane {
-	int axis;
-	float normal;
+	std::array<float, 3> normal;
 	float distance;
+	int surfaceFlags;
+	int entity;
+};
+
+struct CollisionBox {
+	std::array<float, 3> mins;
+	std::array<float, 3> maxs;
 	int surfaceFlags;
 	int entity;
 };
 
 struct World {
 	std::vector<CollisionPlane> planes;
+	std::vector<CollisionBox> boxes;
 	bool water;
 };
 
@@ -38,9 +51,16 @@ void Trace( trace_t *trace, const vec3_t start, const vec3_t mins, const vec3_t 
 	VectorCopy( end, trace->endpos );
 
 	for( const auto &plane : activeWorld.planes ) {
-		const float support = plane.normal > 0 ? mins[plane.axis] : -maxs[plane.axis];
-		const float startDistance = plane.normal * start[plane.axis] + support - plane.distance;
-		const float endDistance = plane.normal * end[plane.axis] + support - plane.distance;
+		float support = 0.0f;
+		float startDistance = -plane.distance;
+		float endDistance = -plane.distance;
+		for( int axis = 0; axis < 3; ++axis ) {
+			support += plane.normal[axis] * ( plane.normal[axis] > 0.0f ? mins[axis] : maxs[axis] );
+			startDistance += plane.normal[axis] * start[axis];
+			endDistance += plane.normal[axis] * end[axis];
+		}
+		startDistance += support;
+		endDistance += support;
 
 		if( startDistance < 0.0f ) {
 			trace->startsolid = true;
@@ -60,12 +80,76 @@ void Trace( trace_t *trace, const vec3_t start, const vec3_t mins, const vec3_t 
 		vec3_t delta;
 		VectorSubtract( end, start, delta );
 		VectorMA( start, fraction, delta, trace->endpos );
-		VectorClear( trace->plane.normal );
-		trace->plane.normal[plane.axis] = plane.normal;
+		VectorCopy( plane.normal.data(), trace->plane.normal );
 		trace->plane.dist = plane.distance;
 		trace->surfFlags = plane.surfaceFlags;
 		trace->contents = CONTENTS_SOLID;
 		trace->ent = plane.entity;
+		trace->allsolid = false;
+	}
+
+	for( const auto &box : activeWorld.boxes ) {
+		std::array<float, 3> expandedMins;
+		std::array<float, 3> expandedMaxs;
+		bool startInside = true;
+		bool endInside = true;
+		float enter = -std::numeric_limits<float>::infinity();
+		float leave = 1.0f;
+		int hitAxis = -1;
+		float hitNormal = 0.0f;
+		bool intersects = true;
+
+		for( int axis = 0; axis < 3; ++axis ) {
+			expandedMins[axis] = box.mins[axis] - maxs[axis];
+			expandedMaxs[axis] = box.maxs[axis] - mins[axis];
+			startInside = startInside && start[axis] > expandedMins[axis] && start[axis] < expandedMaxs[axis];
+			endInside = endInside && end[axis] > expandedMins[axis] && end[axis] < expandedMaxs[axis];
+
+			const float delta = end[axis] - start[axis];
+			if( delta == 0.0f ) {
+				if( start[axis] <= expandedMins[axis] || start[axis] >= expandedMaxs[axis] ) {
+					intersects = false;
+				}
+				continue;
+			}
+
+			float nearDistance = ( expandedMins[axis] - start[axis] ) / delta;
+			float farDistance = ( expandedMaxs[axis] - start[axis] ) / delta;
+			float normal = -1.0f;
+			if( nearDistance > farDistance ) {
+				std::swap( nearDistance, farDistance );
+				normal = 1.0f;
+			}
+			if( nearDistance > enter ) {
+				enter = nearDistance;
+				hitAxis = axis;
+				hitNormal = normal;
+			}
+			leave = std::min( leave, farDistance );
+			if( enter > leave ) {
+				intersects = false;
+			}
+		}
+
+		if( startInside ) {
+			trace->startsolid = true;
+			trace->allsolid = endInside;
+			continue;
+		}
+		if( !intersects || hitAxis < 0 || enter < 0.0f || enter >= trace->fraction || enter > leave ) {
+			continue;
+		}
+
+		trace->fraction = enter;
+		vec3_t delta;
+		VectorSubtract( end, start, delta );
+		VectorMA( start, enter, delta, trace->endpos );
+		VectorClear( trace->plane.normal );
+		trace->plane.normal[hitAxis] = hitNormal;
+		trace->plane.dist = hitNormal > 0.0f ? box.maxs[hitAxis] : -box.mins[hitAxis];
+		trace->surfFlags = box.surfaceFlags;
+		trace->contents = CONTENTS_SOLID;
+		trace->ent = box.entity;
 		trace->allsolid = false;
 	}
 }
@@ -97,6 +181,13 @@ struct Case {
 	bool wall;
 	bool water;
 	bool ladder;
+	enum class Geometry {
+		Flat,
+		Slope,
+		Step,
+		Stairs,
+		BlockedStand
+	} geometry = Geometry::Flat;
 };
 
 constexpr Case cases[] = {
@@ -106,9 +197,16 @@ constexpr Case cases[] = {
 	{ "dash_wall_hit", 1600, 0, 24, 0, 0, true, false, false },
 	{ "walljump_after_dash", 1600, 0, 24, 0, 0, true, false, false },
 	{ "land_slow", 1600, 0, 180, 90, -100, false, false, false },
+	{ "land_medium", 1600, 0, 180, 220, -300, false, false, false },
 	{ "land_fast", 1600, 0, 180, 360, -500, false, false, false },
 	{ "water_swim", 1600, 0, 24, 0, 0, false, true, false },
-	{ "ladder_climb", 1600, 94, 40, 0, 0, true, false, true }
+	{ "ladder_climb", 1600, 94, 40, 0, 0, true, false, true },
+	{ "slope_walk", 1600, 0, 24, 0, 0, false, false, false, Case::Geometry::Slope },
+	{ "step_up", 1600, 0, 24, 0, 0, false, false, false, Case::Geometry::Step },
+	{ "stairs_walk", 1600, 0, 24, 0, 0, false, false, false, Case::Geometry::Stairs },
+	{ "crouch_slide", 1600, 0, 120, 450, -200, false, false, false },
+	{ "crouch_uncrouch", 1600, 0, 24, 0, 0, false, false, false },
+	{ "crouch_blocked_stand", 1600, 0, 24, 0, 0, false, false, false, Case::Geometry::BlockedStand }
 };
 
 int FrameMsec( double rate ) {
@@ -135,14 +233,24 @@ const char *EventName( int event ) {
 
 void EmitCase( const Case &testCase, double rate ) {
 	const int msec = FrameMsec( rate );
-	activeWorld = {
-		{
-			{ 2, 1.0f, 0.0f, 0, 1 }
-		},
-		testCase.water
-	};
+	activeWorld = {};
+	if( testCase.geometry == Case::Geometry::Slope ) {
+		activeWorld.planes.push_back( { { -0.24253562f, 0.0f, 0.9701425f }, 0.0f, 0, 1 } );
+	} else {
+		activeWorld.planes.push_back( { { 0.0f, 0.0f, 1.0f }, 0.0f, 0, 1 } );
+	}
+	if( testCase.geometry == Case::Geometry::Step ) {
+		activeWorld.boxes.push_back( { { 48.0f, -128.0f, 0.0f }, { 80.0f, 128.0f, 12.0f }, 0, 3 } );
+	} else if( testCase.geometry == Case::Geometry::Stairs ) {
+		activeWorld.boxes.push_back( { { 48.0f, -128.0f, 0.0f }, { 72.0f, 128.0f, 6.0f }, 0, 3 } );
+		activeWorld.boxes.push_back( { { 72.0f, -128.0f, 0.0f }, { 96.0f, 128.0f, 12.0f }, 0, 4 } );
+		activeWorld.boxes.push_back( { { 96.0f, -128.0f, 0.0f }, { 120.0f, 128.0f, 18.0f }, 0, 5 } );
+	} else if( testCase.geometry == Case::Geometry::BlockedStand ) {
+		activeWorld.boxes.push_back( { { -32.0f, -64.0f, 40.0f }, { 48.0f, 64.0f, 80.0f }, 0, 3 } );
+	}
+	activeWorld.water = testCase.water;
 	if( testCase.wall ) {
-		activeWorld.planes.push_back( { 0, -1.0f, -110.0f, testCase.ladder ? SURF_LADDER : 0, 2 } );
+		activeWorld.planes.push_back( { { -1.0f, 0.0f, 0.0f }, -110.0f, testCase.ladder ? SURF_LADDER : 0, 2 } );
 	}
 
 	player_state_t state {};
@@ -186,6 +294,17 @@ void EmitCase( const Case &testCase, double rate ) {
 			move.cmd.upmove = elapsed < 400 ? 127 : 0;
 		} else if( std::strcmp( testCase.name, "ladder_climb" ) == 0 ) {
 			move.cmd.upmove = elapsed < 800 ? 127 : 0;
+		} else if( std::strcmp( testCase.name, "slope_walk" ) == 0 ||
+				   std::strcmp( testCase.name, "step_up" ) == 0 ||
+				   std::strcmp( testCase.name, "stairs_walk" ) == 0 ) {
+			move.cmd.forwardmove = 127;
+		} else if( std::strcmp( testCase.name, "crouch_slide" ) == 0 ) {
+			move.cmd.upmove = elapsed < 600 ? -127 : 0;
+		} else if( std::strcmp( testCase.name, "crouch_uncrouch" ) == 0 ) {
+			move.cmd.upmove = elapsed < 300 ? -127 : 0;
+		} else if( std::strcmp( testCase.name, "crouch_blocked_stand" ) == 0 ) {
+			move.cmd.upmove = elapsed < 160 ? -127 : 0;
+			move.cmd.forwardmove = elapsed >= 160 ? 127 : 0;
 		}
 
 		std::vector<RecordedEvent> events;
@@ -217,7 +336,7 @@ void EmitCase( const Case &testCase, double rate ) {
 			if( i ) std::putchar( ';' );
 			std::printf( "%d", move.touchents[i] );
 		}
-		std::printf( "\",%.6f\n", move.step );
+		std::printf( "\",%.6f,%.6f\n", move.step, state.viewheight );
 	}
 }
 
@@ -242,7 +361,7 @@ int main( int argc, char **argv ) {
 	}
 
 	const double rates[] = { 125, 100, 62.5, 60, 50, 30 };
-	std::puts( "scenario,rate_hz,step,time_ms,msec,buttons,forwardmove,sidemove,upmove,pitch,yaw,roll,x,y,z,vx,vy,vz,grounded,waterlevel,ladder,flags,events,touches,step_height" );
+	std::puts( "scenario,rate_hz,step,time_ms,msec,buttons,forwardmove,sidemove,upmove,pitch,yaw,roll,x,y,z,vx,vy,vz,grounded,waterlevel,ladder,flags,events,touches,step_height,view_height" );
 	bool matchedCase = !selectedCase;
 	for( const auto &testCase : cases ) {
 		if( selectedCase && std::strcmp( selectedCase, testCase.name ) != 0 ) {
