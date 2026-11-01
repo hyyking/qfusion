@@ -71,3 +71,22 @@ add_library(execommon
     ${GAME_HEADERS})
 target_link_libraries(execommon PRIVATE angelscript ${CURL_LIBRARY} ${ZLIB_LIBRARY})
 qf_set_output_dir(execommon "")
+
+add_executable(pmove_trace
+    tools/pmove_trace.cpp
+    facilities/gs_pmove.cpp
+    facilities/gs_slidebox.cpp
+    helpers/q_math.cpp
+    types/podvector.cpp)
+if (MSVC)
+    target_compile_options(pmove_trace PRIVATE /Gy)
+    set_property(TARGET pmove_trace APPEND_STRING PROPERTY LINK_FLAGS " /OPT:REF")
+elseif (APPLE)
+    target_compile_options(pmove_trace PRIVATE -ffunction-sections -fdata-sections)
+    set_property(TARGET pmove_trace APPEND_STRING PROPERTY LINK_FLAGS " -Wl,-dead_strip")
+else()
+    target_compile_options(pmove_trace PRIVATE -ffunction-sections -fdata-sections)
+    set_property(TARGET pmove_trace APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+    target_link_libraries(pmove_trace PRIVATE m)
+endif()
+qf_set_output_dir(pmove_trace "")
