@@ -1,6 +1,7 @@
 //! Window/input lifecycle (winit). Wires input events to renderer and audio.
 //! Renders a parsed BSP world mesh. Mouse look uses raw device motion (cursor events are ignored). Escape releases the grab, click or focus re-grabs, Shift+Escape or window close exits.
 
+mod bomb;
 mod game_sound;
 mod hud;
 mod math;
@@ -13,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use hud::HudElement;
 use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
+use qf_engine::game::Team;
 use qf_engine::simulation::bsp_world::BspWorld;
 use qf_engine::simulation::entities::MapEntities;
 use qf_engine::simulation::player::NoclipPlayer;
@@ -23,7 +25,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]...";
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay]";
 
 /// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
 /// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
@@ -41,7 +43,9 @@ struct App {
     game_dirs: Vec<PathBuf>,
     map_pk3: Option<PathBuf>,
     world_mesh: Option<WorldMesh>,
-    bsp: Bsp,
+    bsp: Arc<Bsp>,
+    /// Local Bomb and Defuse match; absent with `--freeplay`.
+    bomb: Option<bomb::BombSession>,
     simulation: ModeSimulation,
     /// Look direction owned by the client. The simulation only sees it on 125 Hz ticks, so
     /// re-reading it from there would drop input on frames that run no tick.
@@ -61,7 +65,8 @@ struct App {
 
 impl App {
     fn new(
-        bsp: Bsp,
+        bsp: Arc<Bsp>,
+        bomb: Option<bomb::BombSession>,
         world_mesh: WorldMesh,
         player: NoclipPlayer,
         sensitivity: f32,
@@ -69,7 +74,7 @@ impl App {
         map_pk3: Option<PathBuf>,
     ) -> Self {
         let mut simulation = ModeSimulation::new(player);
-        let entities = MapEntities::spawn(&bsp.parsed_entities, &bsp);
+        let entities = MapEntities::spawn(&bsp.parsed_entities, &*bsp);
         for warning in entities.warnings() {
             eprintln!(
                 "entity {} ({}): {}",
@@ -91,6 +96,7 @@ impl App {
             map_pk3,
             world_mesh: Some(world_mesh),
             bsp,
+            bomb,
             view_angles: simulation.mode().view().1,
             simulation,
             pressed_keys: HashSet::new(),
@@ -250,6 +256,21 @@ impl ApplicationHandler for App {
                         Key::Character(ref key) if key.eq_ignore_ascii_case("b") => {
                             self.play_sound()
                         }
+                        Key::Character(ref key) if key.eq_ignore_ascii_case("g") => {
+                            if let Some(bomb) = &mut self.bomb {
+                                bomb.command("drop", "");
+                            }
+                        }
+                        Key::Character(ref key) if key.eq_ignore_ascii_case("k") => {
+                            if let Some(bomb) = &mut self.bomb {
+                                bomb.command("suicide", "");
+                            }
+                        }
+                        Key::Character(ref key) if key.eq_ignore_ascii_case("t") => {
+                            if let Some(bomb) = &mut self.bomb {
+                                bomb.switch_team();
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -306,11 +327,24 @@ impl ApplicationHandler for App {
                 };
                 self.view_angles = view_angles;
                 let world = BspWorld::new(&self.bsp);
-                if let Err(error) = self
+                if let Some(bomb) = &mut self.bomb {
+                    bomb.apply_movement_lock(&mut self.simulation);
+                }
+                let ticks = match self
                     .simulation
-                    .advance_frame_with_entities(&world, &self.bsp, elapsed, command)
+                    .advance_frame_with_entities(&world, &*self.bsp, elapsed, command)
                 {
-                    eprintln!("player simulation failed: {error}");
+                    Ok(ticks) => ticks,
+                    Err(error) => {
+                        eprintln!("player simulation failed: {error}");
+                        event_loop.exit();
+                        return;
+                    }
+                };
+                if let Some(bomb) = &mut self.bomb
+                    && let Err(error) = bomb.advance(ticks, &mut self.simulation)
+                {
+                    eprintln!("{error}");
                     event_loop.exit();
                     return;
                 }
@@ -346,6 +380,9 @@ impl ApplicationHandler for App {
                     });
                     self.hud_canvas.clear();
                     self.hud_ups.draw(&screen, &mut self.hud_canvas);
+                    if let Some(bomb) = &self.bomb {
+                        bomb.hud.draw(&screen, &mut self.hud_canvas);
+                    }
                     let movers = self
                         .simulation
                         .entities()
@@ -363,7 +400,8 @@ impl ApplicationHandler for App {
 }
 
 struct Options {
-    bsp: Bsp,
+    bsp: Arc<Bsp>,
+    bomb: Option<bomb::BombSession>,
     mesh: WorldMesh,
     player: NoclipPlayer,
     sensitivity: f32,
@@ -384,8 +422,18 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
     let mut entry = String::from("maps/wbomb1.bsp");
     let mut sensitivity = DEFAULT_SENSITIVITY;
     let mut game_dirs = Vec::new();
+    let mut team = Team::Alpha;
+    let mut freeplay = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--freeplay" => freeplay = true,
+            "--team" => {
+                team = match args.next().as_deref() {
+                    Some("alpha") => Team::Alpha,
+                    Some("beta") => Team::Beta,
+                    _ => return Err("--team requires alpha or beta".into()),
+                }
+            }
             "--entry" => entry = args.next().ok_or("--entry requires a value")?,
             "--game-dir" => {
                 game_dirs.push(PathBuf::from(
@@ -422,11 +470,18 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
     if let Some((mins, maxs)) = mesh.bounds() {
         println!("world bounds: {mins:?} .. {maxs:?}");
     }
+    let bsp = Arc::new(bsp);
+    let bomb = if freeplay {
+        None
+    } else {
+        Some(bomb::BombSession::new(bsp.clone(), team, 1).map_err(|e| e.to_string())?)
+    };
     for diagnostic in &bsp.diagnostics {
         eprintln!("BSP: {diagnostic}");
     }
     Ok(Some(Options {
         bsp,
+        bomb,
         mesh,
         player,
         sensitivity,
@@ -458,6 +513,7 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Poll);
     if let Err(e) = event_loop.run_app(&mut App::new(
         options.bsp,
+        options.bomb,
         options.mesh,
         options.player,
         options.sensitivity,
