@@ -44,6 +44,7 @@ struct App {
     /// re-reading it from there would drop input on frames that run no tick.
     view_angles: [f32; 3],
     pressed_keys: HashSet<KeyCode>,
+    right_mouse_down: bool,
     sensitivity: f32,
     mouse_grabbed: bool,
     /// The first raw motion after a grab can carry a stale jump; drop it.
@@ -73,6 +74,7 @@ impl App {
             view_angles: simulation.mode().view().1,
             simulation,
             pressed_keys: HashSet::new(),
+            right_mouse_down: false,
             sensitivity,
             mouse_grabbed: false,
             skip_next_motion: false,
@@ -132,7 +134,7 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("qfusion - WASD move, Space jump, C crouch, Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B beep, +/- sensitivity, Esc release mouse, Shift+Esc quit");
+            .with_title("qfusion - WASD move, Space jump, C crouch, Right mouse/Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B beep, +/- sensitivity, Esc release mouse, Shift+Esc quit");
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -210,12 +212,18 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Right,
+                ..
+            } => self.right_mouse_down = state == ElementState::Pressed,
+            WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } if !self.mouse_grabbed => self.set_mouse_grab(true),
             WindowEvent::Focused(false) => {
                 self.pressed_keys.clear();
+                self.right_mouse_down = false;
                 self.set_mouse_grab(false);
             }
             WindowEvent::Focused(true) => self.set_mouse_grab(true),
@@ -249,7 +257,8 @@ impl ApplicationHandler for App {
                     forward: self.key_axis(KeyCode::KeyW, KeyCode::KeyS),
                     right: self.key_axis(KeyCode::KeyD, KeyCode::KeyA),
                     up,
-                    special: self.pressed_keys.contains(&KeyCode::ShiftLeft),
+                    special: self.right_mouse_down
+                        || self.pressed_keys.contains(&KeyCode::ShiftLeft),
                     view_angles,
                 };
                 self.view_angles = view_angles;
