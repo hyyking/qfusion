@@ -35,6 +35,9 @@ The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.
 ## Game host
 `game::GameHost` embeds Rhai and runs a gametype script at the fixed 125 Hz tick. The script owns the rules and discovers its map objects through `g.entities()`, `g.trace()` and friends; the engine only supplies players (`game::combat`, armor rule), world queries, a seeded RNG and an event queue. Hooks: required `init`, `tick`; optional `start_match`, `on_player_joined`, `on_team_change`, `on_command`, `on_damage`, `hud`. Tested in `tests/game_host.rs` with an inline script.
 
+## Bomb and Defuse
+The `bomb.rhai` gametype runs on the host above (see `BOMB_AND_DEFUSE.md`). Tests: `tests/bomb_wbomb1.rs` (real map: plant→explosion, defuse, timeout, both eliminations, role/respawn, match end, determinism) and `tests/bomb_synthetic.rs` (hand-made map, command and rule checks).
+
 ## Left out (reported as diagnostics)
 - Bezier patch faces are tessellated into the world mesh (`bsp::patch`, legacy `r_subdivisions` 5, LOD groups by face bounds).
 - Flare and foliage faces are skipped (none in wbomb1).
