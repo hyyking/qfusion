@@ -4,7 +4,7 @@ use super::entities::{BrushModels, MapEntities, TriggerEvent};
 use super::player::{NoclipPlayer, PlayerCommand, StepError, TICK_DURATION};
 use super::pmove::{
     BUTTON_SPECIAL, PmType, PmoveCommand, PmoveRules, PmoveState, PmoveTouch, PmoveWorld,
-    angle_to_short, pmove, pmove_with_touch,
+    PredictedEvent, angle_to_short, pmove, pmove_with_touch,
 };
 
 pub const MOVE_AXIS: f32 = 127.0;
@@ -28,6 +28,8 @@ pub struct WalkPlayer {
     pub state: PmoveState,
     pub view_angles: [f32; 3],
     pub rules: PmoveRules,
+    /// Movement events produced by ticks since the last [`ModeSimulation::take_events`].
+    pub events: Vec<PredictedEvent>,
 }
 
 impl WalkPlayer {
@@ -37,6 +39,7 @@ impl WalkPlayer {
             state: PmoveState::new(player.position),
             view_angles: player.view_angles,
             rules: PmoveRules::default(),
+            events: Vec::new(),
         };
         walk.state.stats.features = u32::MAX;
         walk
@@ -96,14 +99,13 @@ impl WalkPlayer {
             angles,
         };
         self.state.pm_type = PmType::Normal;
-        match touch {
+        let result = match touch {
             Some(touch) => {
-                pmove_with_touch(world, &self.rules, &mut self.state, &pm_command, touch);
+                pmove_with_touch(world, &self.rules, &mut self.state, &pm_command, touch)
             }
-            None => {
-                pmove(world, &self.rules, &mut self.state, &pm_command);
-            }
-        }
+            None => pmove(world, &self.rules, &mut self.state, &pm_command),
+        };
+        self.events.extend(result.events);
         Ok(())
     }
 }
@@ -211,6 +213,14 @@ impl ModeSimulation {
 
     pub fn toggle_mode(&mut self) {
         self.mode.toggle();
+    }
+
+    /// Drains movement events emitted by walking ticks (none in noclip).
+    pub fn take_events(&mut self) -> Vec<PredictedEvent> {
+        match &mut self.mode {
+            MovementMode::Walk(player) => std::mem::take(&mut player.events),
+            MovementMode::Noclip(_) => Vec::new(),
+        }
     }
 
     pub fn advance_frame<W: PmoveWorld>(
