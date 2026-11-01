@@ -1,0 +1,8 @@
+[package]
+name = "qfusion-networking-poc"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "net-poc"
+path = "src/main.rs"
