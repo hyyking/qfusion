@@ -1,7 +1,7 @@
 # qf-platform-poc
 
 Small Rust proof of concept for the desktop platform/runtime foundation of a qfusion port:
-**winit** (window/input) + **wgpu** (rendering) + **cpal** (audio). It renders the supported world mesh from the `tools/bsp-poc` parser; there is no gameplay, BSP collision, or networking.
+**winit** (window/input) + **wgpu** (rendering) + **cpal** (audio). It renders the supported world mesh from the `tools/bsp-poc` parser and wires in a small GPU-independent noclip player; it does not implement BSP collision or networking.
 It is a standalone Cargo project (its own `[workspace]`); it does not touch the C/C++ build.
 
 ## Build / run
@@ -13,7 +13,7 @@ cd rust/qf-platform-poc
 cargo run --release -- "C:\Program Files (x86)\Warsow 2.1\basewsw\map_wbomb1.pk3"
 ```
 
-The input can also be a `.bsp` file directly. For a PK3, `--entry` selects the BSP inside the archive; it defaults to `maps/wbomb1.bsp`. **Space** plays a 0.3 s 660 Hz beep, **Esc** or closing the window exits.
+The input can also be a `.bsp` file directly. For a PK3, `--entry` selects the BSP inside the archive; it defaults to `maps/wbomb1.bsp`. The map's `info_player_deathmatch` spawn (or `info_player_start` fallback) initializes a GPU-independent player simulation. **WASD** moves, **R/F** rise and descend, arrow keys look, **B** plays a 0.3 s 660 Hz beep, and **Esc** or closing the window exits. Movement advances on a fixed 125 Hz tick and is intentionally noclip (no collision or Warsow ground/air physics).
 
 Checks: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test` (tests need no GPU/audio device).
 
@@ -28,19 +28,19 @@ Linux needs ALSA dev headers for cpal (`libasound2-dev`) plus X11/Wayland libs f
 | `src/math.rs` | camera and projection matrix helpers (pure, tested) |
 | `src/audio.rs` | cpal output stream; `AudioOut::play_beep()`; explicit `AudioError` |
 | `src/tone.rs` | pure sine-beep sample generator (tested); no audio asset needed |
+| `../qf-game-poc` | spawn selection, command-driven noclip, and fixed-tick simulation without window/GPU dependencies |
 
 ## Behavior and limitations
 
-- Audio init is attempted at startup; failure (no device, unsupported format) prints a message to stderr and the visuals keep running. Pressing Space retries initialization.
+- Audio init is attempted at startup; failure (no device, unsupported format) prints a message to stderr and the visuals keep running. Pressing B retries initialization.
 - Only `f32`, `i16`, `u16` device sample formats are supported; the beep is mono, copied to all channels.
 - Single persistent output stream; replaying restarts the tone. No mixing, no streaming, no resampling (the tone is generated at the device rate).
-- Fixed vsync, no gamepad/mouse input, no DPI/fullscreen handling beyond resize.
-- Developed/smoke-tested on Windows; Linux/macOS are expected to work but untested.
-- The BSP preview uses a fixed camera framed to the world bounds and a simple normal-lit color; it does not load map textures, lightmaps, or BSP visibility data. The parser skips Bezier patch faces, so those surfaces are absent.
+- Fixed vsync, keyboard-only input, no gamepad/mouse input, and no DPI/fullscreen handling beyond resize.
+- The player renderer uses a first-person camera and a simple normal-lit color; it does not load map textures, lightmaps, or BSP visibility data. The parser skips Bezier patch faces, so those surfaces are absent.
 
 ## Integration seam for a future engine
 
 `main.rs` is the only place that knows both winit and the subsystems. The seams are:
-`Renderer::new(Arc<Window>, &WorldMesh)` / `resize` / `render` (replace the current static BSP view with a frame/scene submission), and
+`Renderer::new(Arc<Window>, &WorldMesh)` / `resize` / `render` (currently submits the noclip player's first-person view), and
 `AudioOut::play_beep()` (replace with a sound-event/mixer API like qfusion's `S_StartSound`). The next step would be a small platform trait or channel
 that the engine core drives, keeping winit as the event pump.

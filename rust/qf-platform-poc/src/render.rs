@@ -7,6 +7,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use bsp_poc::WorldMesh;
+use qf_game_poc::NoclipPlayer;
 
 use crate::math;
 
@@ -37,8 +38,6 @@ pub struct Renderer {
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
-    center: [f32; 3],
-    radius: f32,
 }
 
 impl Renderer {
@@ -50,18 +49,6 @@ impl Renderer {
             return Err("parsed BSP world mesh has inconsistent vertex or index data".into());
         }
         let index_count = u32::try_from(mesh.indices.len())?;
-        let (mins, maxs) = mesh.bounds().ok_or("parsed BSP world mesh has no bounds")?;
-        let center = [
-            (mins[0] + maxs[0]) * 0.5,
-            (mins[1] + maxs[1]) * 0.5,
-            (mins[2] + maxs[2]) * 0.5,
-        ];
-        let radius = (0..3)
-            .map(|axis| (maxs[axis] - mins[axis]).powi(2))
-            .sum::<f32>()
-            .sqrt()
-            * 0.5;
-
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window)?;
@@ -181,8 +168,6 @@ impl Renderer {
             uniform_buf,
             bind_group,
             depth_view,
-            center,
-            radius,
         })
     }
 
@@ -196,7 +181,7 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, &self.config);
     }
 
-    pub fn render(&mut self) {
+    pub fn render(&mut self, player: &NoclipPlayer) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -209,22 +194,25 @@ impl Renderer {
         };
 
         let aspect = self.config.width as f32 / self.config.height as f32;
-        let radius = self.radius.max(1.0);
-        let fov_y = std::f32::consts::FRAC_PI_3;
-        let distance = radius / (fov_y * 0.5).sin() * 1.15;
-        let direction = normalize([1.0, -1.0, 0.7]);
-        let eye = [
-            self.center[0] + direction[0] * distance,
-            self.center[1] + direction[1] * distance,
-            self.center[2] + direction[2] * distance,
+        let fov_y = std::f32::consts::FRAC_PI_2;
+        let [pitch, yaw, _] = player.view_angles.map(f32::to_radians);
+        let forward = [
+            pitch.cos() * yaw.cos(),
+            pitch.cos() * yaw.sin(),
+            pitch.sin(),
         ];
-        let view = math::look_at(eye, self.center, [0.0, 0.0, 1.0]);
-        let proj = math::perspective(
-            fov_y,
-            aspect,
-            (radius * 0.001).max(0.01),
-            distance + radius * 2.0,
-        );
+        let eye = [
+            player.position[0],
+            player.position[1],
+            player.position[2] + 30.0,
+        ];
+        let target = [
+            eye[0] + forward[0],
+            eye[1] + forward[1],
+            eye[2] + forward[2],
+        ];
+        let view = math::look_at(eye, target, [0.0, 0.0, 1.0]);
+        let proj = math::perspective(fov_y, aspect, 0.1, 16_384.0);
         let mvp = math::mul(&proj, &view);
         self.queue
             .write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&Uniforms { mvp }));
@@ -269,15 +257,6 @@ impl Renderer {
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
     }
-}
-
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let length = v
-        .iter()
-        .map(|component| component * component)
-        .sum::<f32>()
-        .sqrt();
-    [v[0] / length, v[1] / length, v[2] / length]
 }
 
 fn create_depth_view(
