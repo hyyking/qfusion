@@ -114,3 +114,12 @@ velocity error 0.0002 over 876 ticks.
   Rust `BspWorld` has no patch collision or submodels (movers), so runs touching those can
   report collision divergences. These are reported, not changed.
 * V (noclip toggle) is not wired in this client; noclip ticks are not recorded.
+
+## Per-step mode and known deviations
+
+Continuous replay accumulates sub-tolerance drift and diverges chaotically once any tick exceeds tolerance. Pass `--per-step` to `qf-movecmp compare` to restart the legacy engine each tick from the previous recorded state, which isolates single-step fidelity. Trigger ticks (jump pads, teleporters) copy the recorded events/touches into both replays.
+
+Findings from a 15336-tick wbomb1 session:
+
+- Dash ticks differ by 0.10-0.14 u/s in velocity: the legacy horizontal normalisation uses an approximate reciprocal square root. Reported, reference semantics unchanged.
+- A zero-length box trace flush against a wall is start-solid in the legacy position test; the Rust trace now implements that special case (`Bsp::trace` with `start == end`). Recordings made before this fix no longer replay bit-exactly at the affected ticks.

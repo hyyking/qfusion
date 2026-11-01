@@ -209,10 +209,15 @@ pub fn replay_with<W: PmoveWorld>(
         } else {
             pmove(world, rules, &mut state, &tick.command)
         };
+        let mut replayed = TickResult::from_state(&state, &result, tick.result.trigger);
         if tick.result.trigger {
             apply_recorded(&mut state, &tick.result);
+            replayed = TickResult::from_state(&state, &result, true);
+            // The entity system, absent here, produced these events and touches.
+            replayed.events = tick.result.events.clone();
+            replayed.touches = tick.result.touches.clone();
         }
-        out.push(TickResult::from_state(&state, &result, tick.result.trigger));
+        out.push(replayed);
     }
     out
 }

@@ -29,7 +29,7 @@ const USAGE: &str = "usage:
   qf-movecmp sample  --map <pk3|bsp> [--entry maps/wbomb1.bsp] [--yaw DEG] --out FILE
   qf-movecmp compare --recording FILE [--map <pk3|bsp>] [--entry ENTRY]
                      (--legacy-exe pmove_replay | --legacy-recording FILE [--legacy-trace FILE] | --rust-only)
-                     [--out-dir DIR] [--tol-position N] [--tol-velocity N] [--window TICKS]
+                     [--out-dir DIR] [--per-step] [--tol-position N] [--tol-velocity N] [--window TICKS]
 
 Without --map the map pack is looked up as map_<name>.pk3 in $WARSOW_BASEWSW (default
 C:\\Program Files (x86)\\Warsow 2.1\\basewsw). Exit status: 0 match, 1 divergence, 2 error.";
@@ -55,6 +55,7 @@ struct Args {
     legacy_trace: Option<PathBuf>,
     out_dir: Option<PathBuf>,
     rust_only: bool,
+    per_step: bool,
     yaw: f32,
     window: usize,
     tolerances: Tolerances,
@@ -82,6 +83,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--legacy-trace" => a.legacy_trace = Some(value("--legacy-trace")?.into()),
             "--out-dir" => a.out_dir = Some(value("--out-dir")?.into()),
             "--rust-only" => a.rust_only = true,
+            "--per-step" => a.per_step = true,
             "--yaw" => a.yaw = number(value("--yaw")?)?,
             "--window" => {
                 a.window = value("--window")?
@@ -163,8 +165,12 @@ fn run_legacy(
     bsp: &Path,
     out: &Path,
     trace: Option<(usize, &Path)>,
+    per_step: bool,
 ) -> Result<(), String> {
     let mut command = Command::new(exe);
+    if per_step {
+        command.arg("--per-step");
+    }
     command
         .arg("--recording")
         .arg(recording)
@@ -249,7 +255,7 @@ fn compare_command(args: &Args) -> Result<i32, String> {
         let bsp_path = out_dir.join("map.bsp");
         std::fs::write(&bsp_path, &data).map_err(|e| e.to_string())?;
         let out = out_dir.join("legacy.qfrec");
-        run_legacy(exe, recording_path, &bsp_path, &out, None)?;
+        run_legacy(exe, recording_path, &bsp_path, &out, None, args.per_step)?;
         let description = format!("legacy `gs_pmove.cpp` via `{}`", exe.display());
         (read_recording(&out)?, description)
     } else if let Some(path) = &args.legacy_recording {
@@ -260,7 +266,14 @@ fn compare_command(args: &Args) -> Result<i32, String> {
     } else {
         return Err("one of --legacy-exe, --legacy-recording or --rust-only is required".into());
     };
-    let legacy = results(&legacy_recording);
+    let mut legacy = results(&legacy_recording);
+    // Entity-driven events and touches do not exist in the legacy movement code.
+    for (legacy, recorded) in legacy.iter_mut().zip(&recording.ticks) {
+        if recorded.result.trigger {
+            legacy.events = recorded.result.events.clone();
+            legacy.touches = recorded.result.touches.clone();
+        }
+    }
     let comparison = compare(&rust, &legacy, &args.tolerances);
 
     let mut cause = None;
@@ -275,6 +288,7 @@ fn compare_command(args: &Args) -> Result<i32, String> {
                 &out_dir.join("map.bsp"),
                 &scratch,
                 Some((tick, &path)),
+                args.per_step,
             )?;
             let _ = std::fs::remove_file(scratch);
             Some(path)

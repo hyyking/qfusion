@@ -3,7 +3,7 @@
 // same recording format so the Rust comparison tool can diff it tick by tick.
 //
 //   pmove_replay --recording run.qfrec --bsp map.bsp --out legacy.qfrec
-//                [--trace-from N --trace-to M --trace-out trace.txt]
+//                [--per-step] [--trace-from N --trace-to M --trace-out trace.txt]
 //
 // With --trace-*, every collision query made during ticks N..M is logged for the comparison
 // tool to classify a divergence as a collision or an integration mismatch.
@@ -301,11 +301,13 @@ void WriteTraceLog( const char *path ) {
 
 int main( int argc, char **argv ) {
 	const char *recordingPath = nullptr, *bspPath = nullptr, *outPath = nullptr, *traceOut = nullptr;
+	bool perStep = false;
 	for( int i = 1; i < argc; ++i ) {
 		const bool more = i + 1 < argc;
 		if( !std::strcmp( argv[i], "--recording" ) && more ) recordingPath = argv[++i];
 		else if( !std::strcmp( argv[i], "--bsp" ) && more ) bspPath = argv[++i];
 		else if( !std::strcmp( argv[i], "--out" ) && more ) outPath = argv[++i];
+		else if( !std::strcmp( argv[i], "--per-step" ) ) perStep = true;
 		else if( !std::strcmp( argv[i], "--trace-from" ) && more ) traceFrom = std::atoi( argv[++i] );
 		else if( !std::strcmp( argv[i], "--trace-to" ) && more ) traceTo = std::atoi( argv[++i] );
 		else if( !std::strcmp( argv[i], "--trace-out" ) && more ) traceOut = argv[++i];
@@ -382,6 +384,20 @@ int main( int argc, char **argv ) {
 		move.cmd.upmove = (int8_t)tick.up;
 		for( int i = 0; i < 3; ++i ) {
 			move.cmd.angles[i] = (short)tick.angles[i];
+		}
+
+		// Per-step mode starts every tick from the recorded state of the previous tick, so each
+		// output is one legacy step from the same input state as Rust (no accumulated drift).
+		if( perStep && index > 0 ) {
+			const Tick &prev = recording.ticks[index - 1];
+			VectorCopy( prev.origin, state.pmove.origin );
+			VectorCopy( prev.velocity, state.pmove.velocity );
+			state.pmove.pm_flags = prev.flags;
+			state.pmove.pm_time = prev.pmTime;
+			state.viewheight = prev.viewHeight;
+			for( int i = 0; i < 3; ++i ) {
+				state.pmove.delta_angles[i] = (short)prev.delta[i];
+			}
 		}
 
 		std::vector<RecordedEvent> events;
