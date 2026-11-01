@@ -1,14 +1,13 @@
 //! Window/input lifecycle (winit). Wires input events to renderer and audio.
 //! Renders a parsed BSP world mesh. Mouse look uses raw device motion (cursor events are ignored). Escape releases the grab, click or focus re-grabs, Shift+Escape or window close exits.
 
-mod audio;
+mod game_sound;
 mod hud;
 mod math;
 mod render;
-mod tone;
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,8 +23,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-const USAGE: &str =
-    "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0]";
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]...";
 
 /// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
 /// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
@@ -39,7 +37,9 @@ const MAX_PITCH: f32 = 89.0;
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<render::Renderer>,
-    audio: Option<audio::AudioOut>,
+    audio: Option<game_sound::GameSound>,
+    game_dirs: Vec<PathBuf>,
+    map_pk3: Option<PathBuf>,
     world_mesh: Option<WorldMesh>,
     bsp: Bsp,
     simulation: ModeSimulation,
@@ -60,7 +60,14 @@ struct App {
 }
 
 impl App {
-    fn new(bsp: Bsp, world_mesh: WorldMesh, player: NoclipPlayer, sensitivity: f32) -> Self {
+    fn new(
+        bsp: Bsp,
+        world_mesh: WorldMesh,
+        player: NoclipPlayer,
+        sensitivity: f32,
+        game_dirs: Vec<PathBuf>,
+        map_pk3: Option<PathBuf>,
+    ) -> Self {
         let mut simulation = ModeSimulation::new(player);
         let entities = MapEntities::spawn(&bsp.parsed_entities, &bsp);
         for warning in entities.warnings() {
@@ -76,17 +83,12 @@ impl App {
         );
         simulation.set_entities(entities);
         simulation.toggle_mode();
-        let audio = match audio::AudioOut::new() {
-            Ok(a) => Some(a),
-            Err(e) => {
-                eprintln!("audio unavailable: {e} (press B to retry)");
-                None
-            }
-        };
-        Self {
+        let mut app = Self {
             window: None,
             renderer: None,
-            audio,
+            audio: None,
+            game_dirs,
+            map_pk3,
             world_mesh: Some(world_mesh),
             bsp,
             view_angles: simulation.mode().view().1,
@@ -100,6 +102,16 @@ impl App {
             skip_next_motion: false,
             mouse_delta: [0.0; 2],
             last_frame: None,
+        };
+        app.start_audio();
+        app
+    }
+
+    fn start_audio(&mut self) {
+        let vfs = game_sound::mount_content(&self.game_dirs, self.map_pk3.as_deref());
+        match game_sound::GameSound::new(vfs, &self.bsp) {
+            Ok(a) => self.audio = Some(a),
+            Err(e) => eprintln!("audio unavailable: {e} (press B to retry)"),
         }
     }
 
@@ -137,13 +149,10 @@ impl App {
 
     fn play_sound(&mut self) {
         if self.audio.is_none() {
-            match audio::AudioOut::new() {
-                Ok(a) => self.audio = Some(a),
-                Err(e) => eprintln!("cannot play sound: {e}"),
-            }
+            self.start_audio();
         }
-        if let Some(a) = &self.audio {
-            a.play_beep();
+        if let Some(a) = &mut self.audio {
+            a.play_test_sound();
         }
     }
 }
@@ -154,7 +163,7 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("qfusion - WASD move, Space jump, C crouch, Right mouse/Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B beep, +/- sensitivity, Esc release mouse, Shift+Esc quit");
+            .with_title("qfusion - WASD move, Space jump, C crouch, Right mouse/Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B test sound, +/- sensitivity, Esc release mouse, Shift+Esc quit");
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -293,11 +302,20 @@ impl ApplicationHandler for App {
                 }
                 // Teleporters rewrite the look direction.
                 self.view_angles = self.simulation.mode().view().1;
-                for event in self.simulation.drain_trigger_events() {
+                let (eye, _) = self.simulation.mode().view();
+                let trigger_events = self.simulation.drain_trigger_events();
+                for event in &trigger_events {
                     println!("trigger: {event:?}");
                 }
+                if let Some(audio) = &mut self.audio {
+                    audio.update(
+                        eye,
+                        self.view_angles[1],
+                        &mut self.simulation,
+                        &trigger_events,
+                    );
+                }
                 if let Some(r) = &mut self.renderer {
-                    let (eye, _) = self.simulation.mode().view();
                     let [width, height] = r.size();
                     let scale = self
                         .window
@@ -330,6 +348,8 @@ struct Options {
     mesh: WorldMesh,
     player: NoclipPlayer,
     sensitivity: f32,
+    game_dirs: Vec<PathBuf>,
+    map_pk3: Option<PathBuf>,
 }
 
 fn load_world_mesh() -> Result<Option<Options>, String> {
@@ -344,9 +364,15 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
 
     let mut entry = String::from("maps/wbomb1.bsp");
     let mut sensitivity = DEFAULT_SENSITIVITY;
+    let mut game_dirs = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--entry" => entry = args.next().ok_or("--entry requires a value")?,
+            "--game-dir" => {
+                game_dirs.push(PathBuf::from(
+                    args.next().ok_or("--game-dir requires a value")?,
+                ));
+            }
             "--sensitivity" => {
                 sensitivity = args
                     .next()
@@ -385,6 +411,11 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
         mesh,
         player,
         sensitivity,
+        game_dirs,
+        map_pk3: input
+            .to_lowercase()
+            .ends_with(".pk3")
+            .then(|| path.to_path_buf()),
     }))
 }
 
@@ -411,6 +442,8 @@ fn main() {
         options.mesh,
         options.player,
         options.sensitivity,
+        options.game_dirs,
+        options.map_pk3,
     )) {
         eprintln!("event loop error: {e}");
         std::process::exit(1);

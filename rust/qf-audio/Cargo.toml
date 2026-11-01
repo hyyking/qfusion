@@ -1,0 +1,11 @@
+[package]
+name = "qf-audio"
+version = "0.1.0"
+edition = "2024"
+description = "qfusion game audio: decoding, mixing and spatial sound (cpal output)"
+
+[dependencies]
+qf-engine = { path = "../qf-engine" }
+cpal = "0.18.2"
+lewton = "0.10.2"
+rtrb = "0.4.1"
