@@ -5,7 +5,7 @@ use std::fmt;
 use super::vfs::Vfs;
 
 /// Extensions tried, in legacy order, when a texture name has none or a missing one.
-const EXTENSIONS: [&str; 3] = ["tga", "jpg", "png"];
+const EXTENSIONS: [&str; 4] = ["tga", "jpg", "png", "ktx"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rgba8Image {
@@ -34,12 +34,75 @@ impl std::error::Error for ImageError {}
 
 impl Rgba8Image {
     pub fn decode(data: &[u8]) -> Result<Self, ImageError> {
-        let img = image::load_from_memory(data).map_err(|e| ImageError::Decode(e.to_string()))?;
+        Self::decode_hint(data, None)
+    }
+
+    /// Decodes with the format taken from a file extension when known; TGA has no magic
+    /// number, so content sniffing alone cannot identify it.
+    pub fn decode_hint(data: &[u8], ext: Option<&str>) -> Result<Self, ImageError> {
+        if ext.is_some_and(|e| e.eq_ignore_ascii_case("ktx")) {
+            return Self::decode_ktx(data);
+        }
+        let format = ext.and_then(image::ImageFormat::from_extension);
+        let img = match format {
+            Some(f) => image::load_from_memory_with_format(data, f),
+            None => image::load_from_memory(data),
+        }
+        .map_err(|e| ImageError::Decode(e.to_string()))?;
         let rgba = img.to_rgba8();
         Ok(Self {
             width: rgba.width(),
             height: rgba.height(),
             pixels: rgba.into_raw(),
+        })
+    }
+
+    /// KTX1 container with a block-compressed first mip (legacy ships ETC1 `.ktx` textures
+    /// for some assets); decoded with `texture2ddecoder`.
+    fn decode_ktx(data: &[u8]) -> Result<Self, ImageError> {
+        const MAGIC: [u8; 12] = *b"\xABKTX 11\xBB\r\n\x1A\n";
+        let err = |m: &str| ImageError::Decode(format!("ktx: {m}"));
+        if data.len() < 68 || data[..12] != MAGIC {
+            return Err(err("bad header"));
+        }
+        let word = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
+        if word(12) != 0x0403_0201 {
+            return Err(err("big-endian files are not supported"));
+        }
+        let (internal, width, height, kv) = (
+            word(28),
+            word(36) as usize,
+            word(40) as usize,
+            word(60) as usize,
+        );
+        let start = 64 + kv;
+        if width == 0 || height == 0 || data.len() < start + 4 {
+            return Err(err("truncated"));
+        }
+        let size = word(start) as usize;
+        let blocks = data
+            .get(start + 4..start + 4 + size)
+            .ok_or_else(|| err("truncated image data"))?;
+        let mut out = vec![0u32; width * height];
+        let result = match internal {
+            0x8D64 | 0x8D65 => texture2ddecoder::decode_etc1(blocks, width, height, &mut out),
+            0x9274 | 0x9275 => texture2ddecoder::decode_etc2_rgb(blocks, width, height, &mut out),
+            0x9278 | 0x9279 => texture2ddecoder::decode_etc2_rgba8(blocks, width, height, &mut out),
+            0x83F0 | 0x83F1 => texture2ddecoder::decode_bc1(blocks, width, height, &mut out),
+            0x83F2 => texture2ddecoder::decode_bc2(blocks, width, height, &mut out),
+            0x83F3 => texture2ddecoder::decode_bc3(blocks, width, height, &mut out),
+            other => return Err(err(&format!("unsupported internal format 0x{other:X}"))),
+        };
+        result.map_err(|e| err(e))?;
+        // The decoder packs pixels as 0xAARRGGBB.
+        let pixels = out
+            .iter()
+            .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, (p >> 24) as u8])
+            .collect();
+        Ok(Self {
+            width: width as u32,
+            height: height as u32,
+            pixels,
         })
     }
 
@@ -139,7 +202,7 @@ pub fn load_image(vfs: &Vfs, name: &str) -> Result<Rgba8Image, ImageError> {
     let data = vfs
         .read(&path)
         .map_err(|e| ImageError::Decode(e.to_string()))?;
-    Rgba8Image::decode(&data)
+    Rgba8Image::decode_hint(&data, path.rsplit_once('.').map(|(_, e)| e))
 }
 
 #[cfg(test)]

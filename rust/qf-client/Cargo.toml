@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
 qf-audio = { path = "../qf-audio" }
 qf-engine = { path = "../qf-engine" }
 bytemuck = { version = "1.25.2", features = ["derive"] }

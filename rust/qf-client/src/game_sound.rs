@@ -35,14 +35,14 @@ pub fn mount_content(game_dirs: &[PathBuf], map_pk3: Option<&Path>) -> Vfs {
     };
     for dir in dirs.iter().filter(|d| d.is_dir()) {
         match vfs.mount_pk3_dir(dir) {
-            Ok(n) => println!("audio: mounted {n} packs from {}", dir.display()),
-            Err(e) => eprintln!("audio: cannot mount {}: {e}", dir.display()),
+            Ok(n) => println!("content: mounted {n} packs from {}", dir.display()),
+            Err(e) => eprintln!("content: cannot mount {}: {e}", dir.display()),
         }
     }
     if let Some(pk3) = map_pk3
         && let Err(e) = vfs.mount_pk3(pk3)
     {
-        eprintln!("audio: cannot mount {}: {e}", pk3.display());
+        eprintln!("content: cannot mount {}: {e}", pk3.display());
     }
     vfs
 }
@@ -124,7 +124,7 @@ impl GameSound {
 
     fn print_reports(&mut self) {
         for report in self.system.take_reports() {
-            eprintln!("audio: {report}");
+            eprintln!("content: {report}");
         }
     }
 }
