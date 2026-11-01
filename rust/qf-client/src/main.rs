@@ -40,6 +40,9 @@ struct App {
     world_mesh: Option<WorldMesh>,
     bsp: Bsp,
     simulation: ModeSimulation,
+    /// Look direction owned by the client. The simulation only sees it on 125 Hz ticks, so
+    /// re-reading it from there would drop input on frames that run no tick.
+    view_angles: [f32; 3],
     pressed_keys: HashSet<KeyCode>,
     sensitivity: f32,
     mouse_grabbed: bool,
@@ -67,6 +70,7 @@ impl App {
             audio,
             world_mesh: Some(world_mesh),
             bsp,
+            view_angles: simulation.mode().view().1,
             simulation,
             pressed_keys: HashSet::new(),
             sensitivity,
@@ -227,7 +231,7 @@ impl ApplicationHandler for App {
                     .replace(now)
                     .map_or(Duration::ZERO, |last| now.duration_since(last));
                 let look_speed = 90.0 * elapsed.as_secs_f32();
-                let mut view_angles = self.simulation.mode().view().1;
+                let mut view_angles = self.view_angles;
                 view_angles[0] += self.key_axis(KeyCode::ArrowUp, KeyCode::ArrowDown) * look_speed;
                 view_angles[1] +=
                     self.key_axis(KeyCode::ArrowRight, KeyCode::ArrowLeft) * look_speed;
@@ -248,6 +252,7 @@ impl ApplicationHandler for App {
                     special: self.pressed_keys.contains(&KeyCode::ShiftLeft),
                     view_angles,
                 };
+                self.view_angles = view_angles;
                 let world = BspWorld::new(&self.bsp);
                 if let Err(error) = self.simulation.advance_frame(&world, elapsed, command) {
                     eprintln!("player simulation failed: {error}");
@@ -255,8 +260,8 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if let Some(r) = &mut self.renderer {
-                    let (eye, angles) = self.simulation.mode().view();
-                    r.render(eye, angles);
+                    let (eye, _) = self.simulation.mode().view();
+                    r.render(eye, self.view_angles);
                 }
                 if let Some(w) = &self.window {
                     w.request_redraw();
