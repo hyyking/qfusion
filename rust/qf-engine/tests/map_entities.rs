@@ -158,6 +158,42 @@ fn teleporter_moves_and_turns_the_walking_player() {
 }
 
 #[test]
+fn all_official_maps_spawn_without_warnings() {
+    let base = std::env::var("WARSOW_BASEWSW")
+        .unwrap_or_else(|_| r"C:\Program Files (x86)\Warsow 2.1\basewsw".into());
+    let Ok(dir) = std::fs::read_dir(&base) else {
+        eprintln!("skipping: {base} unavailable");
+        return;
+    };
+    let mut union = std::collections::BTreeMap::<String, usize>::new();
+    let mut maps = 0;
+    for file in dir.flatten() {
+        let name = file.file_name().to_string_lossy().into_owned();
+        let Some(map_name) = name
+            .strip_prefix("map_")
+            .and_then(|n| n.strip_suffix(".pk3"))
+        else {
+            continue;
+        };
+        let Ok(data) = read_pk3_entry(&file.path(), &format!("maps/{map_name}.bsp")) else {
+            continue;
+        };
+        let Ok(bsp) = Bsp::parse(&data) else { continue };
+        let map = MapEntities::spawn(&bsp.parsed_entities, &bsp);
+        assert!(
+            map.warnings().is_empty(),
+            "{map_name}: {:?}",
+            map.warnings()
+        );
+        for (classname, count) in map.unsupported_classnames() {
+            *union.entry(classname.clone()).or_default() += count;
+        }
+        maps += 1;
+    }
+    eprintln!("{maps} maps; unsupported union: {union:#?}");
+}
+
+#[test]
 fn real_wbomb1_entities_spawn() {
     let base = std::env::var("WARSOW_BASEWSW")
         .unwrap_or_else(|_| r"C:\Program Files (x86)\Warsow 2.1\basewsw".into());

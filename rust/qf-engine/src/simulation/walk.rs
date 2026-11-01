@@ -166,7 +166,7 @@ impl MovementMode {
 }
 
 /// Fixed 125 Hz accumulator over either movement mode, with optional map entities.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ModeSimulation {
     mode: MovementMode,
     remainder: Duration,
@@ -193,6 +193,11 @@ impl ModeSimulation {
 
     pub fn entities(&self) -> Option<&MapEntities> {
         self.entities.as_ref()
+    }
+
+    /// For supplying telefrag occupants or activating entities between ticks.
+    pub fn entities_mut(&mut self) -> Option<&mut MapEntities> {
+        self.entities.as_mut()
     }
 
     /// Takes the trigger events produced by walking ticks since the last call.
@@ -259,7 +264,13 @@ impl ModeSimulation {
                     }
                     self.trigger_events.extend(events);
                 }
-                _ => self.mode.step(world, command, None)?,
+                _ => {
+                    self.mode.step(world, command, None)?;
+                    if let Some(entities) = &mut self.entities {
+                        entities.think(time_ms);
+                        self.trigger_events.extend(entities.drain_events());
+                    }
+                }
             }
         }
         self.remainder =
