@@ -1,3 +1,4 @@
+use super::patch::PatchCollide;
 use super::{Brush, Bsp, Plane};
 
 const DIST_EPSILON: f32 = 1.0 / 32.0;
@@ -46,9 +47,8 @@ struct Segment {
 impl Bsp {
     /// Sweeps a point or axis-aligned box through world model 0's BSP brushes.
     ///
-    /// `mins` and `maxs` are offsets from the trace origin. Patch faces and
-    /// inline submodels are not included; only world BSP brush collision is
-    /// evaluated.
+    /// `mins` and `maxs` are offsets from the trace origin. Solid patch faces are
+    /// clipped via their collision facets; inline submodels are not included.
     pub fn trace(
         &self,
         start: [f32; 3],
@@ -86,6 +86,7 @@ impl Bsp {
 
         let extents = std::array::from_fn(|axis| (-mins[axis]).max(maxs[axis]));
         let mut seen_brushes = vec![false; self.brushes.len()];
+        let mut seen_patches = vec![false; self.patches.len()];
         let mut stack = vec![Segment {
             node: 0,
             start_fraction: 0.0,
@@ -111,6 +112,27 @@ impl Bsp {
                     let brush = &self.brushes[brush_index];
                     if brush.contents as u32 & contents_mask != 0 {
                         self.clip_brush(brush, start, end, mins, maxs, &mut result);
+                        if result.all_solid {
+                            break;
+                        }
+                    }
+                }
+                if result.all_solid {
+                    continue;
+                }
+                for &face_index in &self.leaf_faces
+                    [leaf.first_leaf_face..leaf.first_leaf_face + leaf.num_leaf_faces]
+                {
+                    let Some(patch_index) = self.face_patch[face_index] else {
+                        continue;
+                    };
+                    if seen_patches[patch_index] {
+                        continue;
+                    }
+                    seen_patches[patch_index] = true;
+                    let patch = &self.patches[patch_index];
+                    if patch.contents as u32 & contents_mask != 0 {
+                        self.clip_patch(patch, (start, end, mins, maxs), &mut result);
                         if result.all_solid {
                             break;
                         }
@@ -197,18 +219,62 @@ impl Bsp {
         maxs: [f32; 3],
         trace: &mut Trace,
     ) {
-        if brush.num_sides == 0 {
+        let sides = &self.brush_sides[brush.first_side..brush.first_side + brush.num_sides];
+        self.clip_planes(
+            sides
+                .iter()
+                .map(|side| (&self.planes[side.plane], side.shader)),
+            brush.contents,
+            (start, end, mins, maxs),
+            trace,
+        );
+    }
+
+    fn clip_patch(
+        &self,
+        patch: &PatchCollide,
+        sweep: ([f32; 3], [f32; 3], [f32; 3], [f32; 3]),
+        trace: &mut Trace,
+    ) {
+        let (start, end, mins, maxs) = sweep;
+        if !sweep_overlaps(sweep, patch.mins, patch.maxs) {
             return;
         }
+        for facet in &patch.facets {
+            if !sweep_overlaps(sweep, facet.mins, facet.maxs) {
+                continue;
+            }
+            self.clip_planes(
+                facet.planes.iter().map(|p| (p, patch.shader)),
+                patch.contents,
+                (start, end, mins, maxs),
+                trace,
+            );
+            if trace.all_solid {
+                return;
+            }
+        }
+    }
+
+    /// Clips the swept box against a convex set of planes (brush or patch facet).
+    fn clip_planes<'a>(
+        &self,
+        sides: impl Iterator<Item = (&'a Plane, usize)>,
+        contents: i32,
+        sweep: ([f32; 3], [f32; 3], [f32; 3], [f32; 3]),
+        trace: &mut Trace,
+    ) {
+        let (start, end, mins, maxs) = sweep;
         let mut enter_fraction = -1.0f32;
         let mut leave_fraction = 1.0f32;
         let mut lead_plane: Option<&Plane> = None;
         let mut lead_shader = None;
         let mut get_out = false;
         let mut start_out = false;
+        let mut any_side = false;
 
-        for side in &self.brush_sides[brush.first_side..brush.first_side + brush.num_sides] {
-            let plane = &self.planes[side.plane];
+        for (plane, shader) in sides {
+            any_side = true;
             let start_support = support_point(start, mins, maxs, plane.normal);
             let end_support = support_point(end, mins, maxs, plane.normal);
             let d1 = dot(plane.normal, start_support) - plane.dist;
@@ -232,7 +298,7 @@ impl Bsp {
                 if fraction > enter_fraction {
                     enter_fraction = fraction;
                     lead_plane = Some(plane);
-                    lead_shader = Some(side.shader);
+                    lead_shader = Some(shader);
                 }
             } else if difference < 0.0 {
                 let fraction = (d1 + DIST_EPSILON) * (1.0 / difference);
@@ -242,9 +308,12 @@ impl Bsp {
             }
         }
 
+        if !any_side {
+            return;
+        }
         if !start_out {
             trace.start_solid = true;
-            trace.contents = brush.contents as u32;
+            trace.contents = contents as u32;
             if !get_out {
                 trace.all_solid = true;
                 trace.fraction = 0.0;
@@ -263,10 +332,22 @@ impl Bsp {
                 dist: p.dist,
             });
             trace.surface_flags = shader_ref.surface_flags as u32;
-            trace.contents = brush.contents as u32;
+            trace.contents = contents as u32;
             trace.shader = Some(shader);
         }
     }
+}
+
+/// Conservative test of the swept box (start..end grown by mins/maxs) against bounds.
+fn sweep_overlaps(
+    (start, end, mins, maxs): ([f32; 3], [f32; 3], [f32; 3], [f32; 3]),
+    bounds_mins: [f32; 3],
+    bounds_maxs: [f32; 3],
+) -> bool {
+    (0..3).all(|axis| {
+        start[axis].min(end[axis]) + mins[axis] <= bounds_maxs[axis]
+            && start[axis].max(end[axis]) + maxs[axis] >= bounds_mins[axis]
+    })
 }
 
 fn support_point(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], normal: [f32; 3]) -> [f32; 3] {

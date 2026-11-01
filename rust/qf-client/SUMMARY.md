@@ -14,7 +14,7 @@ The installed `wbomb1` map was parsed through the engine smoke test and BSP insp
 
 ## Runtime limitations
 
-- The renderer remains a BSP preview with no textures or lightmaps; unsupported patch faces are omitted.
+- The renderer remains a BSP preview with no textures or lightmaps; patches are tessellated.
 - Audio is a generated test beep, not a game mixer.
 - Window resizing is supported; mouse/gamepad input, fullscreen, and DPI behavior are not implemented.
 - Tests do not require a display, GPU, or audio device.
