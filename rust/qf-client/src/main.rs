@@ -1,5 +1,5 @@
 //! Window/input lifecycle (winit). Wires input events to renderer and audio.
-//! Renders a parsed BSP world mesh. Space plays a beep, Escape or window close exits.
+//! Renders a parsed BSP world mesh. Mouse look (cursor grabbed); Escape releases the grab, a second Escape or window close exits.
 
 mod audio;
 mod math;
@@ -16,12 +16,18 @@ use qf_engine::simulation::bsp_world::BspWorld;
 use qf_engine::simulation::player::NoclipPlayer;
 use qf_engine::simulation::walk::{ModeSimulation, WalkCommand};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::{CursorGrabMode, Window, WindowId};
 
-const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp]";
+const USAGE: &str =
+    "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0]";
+
+/// Degrees of view rotation per raw mouse count at sensitivity 1.
+const DEGREES_PER_COUNT: f32 = 0.022;
+const DEFAULT_SENSITIVITY: f32 = 3.0;
+const MAX_PITCH: f32 = 89.0;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -31,11 +37,15 @@ struct App {
     bsp: Bsp,
     simulation: ModeSimulation,
     pressed_keys: HashSet<KeyCode>,
+    sensitivity: f32,
+    mouse_grabbed: bool,
+    /// Raw motion accumulated since the last frame; consumed once per redraw.
+    mouse_delta: [f64; 2],
     last_frame: Option<Instant>,
 }
 
 impl App {
-    fn new(bsp: Bsp, world_mesh: WorldMesh, player: NoclipPlayer) -> Self {
+    fn new(bsp: Bsp, world_mesh: WorldMesh, player: NoclipPlayer, sensitivity: f32) -> Self {
         let mut simulation = ModeSimulation::new(player);
         simulation.toggle_mode();
         let audio = match audio::AudioOut::new() {
@@ -53,6 +63,9 @@ impl App {
             bsp,
             simulation,
             pressed_keys: HashSet::new(),
+            sensitivity,
+            mouse_grabbed: false,
+            mouse_delta: [0.0; 2],
             last_frame: None,
         }
     }
@@ -69,6 +82,23 @@ impl App {
             0.0
         };
         positive - negative
+    }
+
+    fn set_mouse_grab(&mut self, grab: bool) {
+        let Some(window) = &self.window else { return };
+        if grab {
+            let grabbed = window
+                .set_cursor_grab(CursorGrabMode::Locked)
+                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+                .is_ok();
+            window.set_cursor_visible(!grabbed);
+            self.mouse_grabbed = grabbed;
+        } else {
+            let _ = window.set_cursor_grab(CursorGrabMode::None);
+            window.set_cursor_visible(true);
+            self.mouse_grabbed = false;
+        }
+        self.mouse_delta = [0.0; 2];
     }
 
     fn play_sound(&mut self) {
@@ -114,6 +144,16 @@ impl ApplicationHandler for App {
         }
         window.request_redraw();
         self.window = Some(window);
+        self.set_mouse_grab(true);
+    }
+
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta } = event
+            && self.mouse_grabbed
+        {
+            self.mouse_delta[0] += delta.0;
+            self.mouse_delta[1] += delta.1;
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -129,7 +169,13 @@ impl ApplicationHandler for App {
                 }
                 if event.state == ElementState::Pressed && !event.repeat {
                     match event.logical_key {
-                        Key::Named(NamedKey::Escape) => event_loop.exit(),
+                        Key::Named(NamedKey::Escape) => {
+                            if self.mouse_grabbed {
+                                self.set_mouse_grab(false);
+                            } else {
+                                event_loop.exit();
+                            }
+                        }
                         Key::Character(ref key) if key.eq_ignore_ascii_case("b") => {
                             self.play_sound()
                         }
@@ -137,7 +183,15 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::Focused(false) => self.pressed_keys.clear(),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if !self.mouse_grabbed => self.set_mouse_grab(true),
+            WindowEvent::Focused(false) => {
+                self.pressed_keys.clear();
+                self.set_mouse_grab(false);
+            }
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
@@ -154,6 +208,11 @@ impl ApplicationHandler for App {
                 view_angles[0] += self.key_axis(KeyCode::ArrowUp, KeyCode::ArrowDown) * look_speed;
                 view_angles[1] +=
                     self.key_axis(KeyCode::ArrowRight, KeyCode::ArrowLeft) * look_speed;
+                let [dx, dy] = std::mem::take(&mut self.mouse_delta);
+                let degrees = DEGREES_PER_COUNT * self.sensitivity;
+                view_angles[1] -= dx as f32 * degrees;
+                view_angles[0] =
+                    (view_angles[0] - dy as f32 * degrees).clamp(-MAX_PITCH, MAX_PITCH);
                 let up = if self.simulation.mode().is_walking() {
                     self.key_axis(KeyCode::Space, KeyCode::KeyC)
                 } else {
@@ -185,7 +244,14 @@ impl ApplicationHandler for App {
     }
 }
 
-fn load_world_mesh() -> Result<Option<(Bsp, WorldMesh, NoclipPlayer)>, String> {
+struct Options {
+    bsp: Bsp,
+    mesh: WorldMesh,
+    player: NoclipPlayer,
+    sensitivity: f32,
+}
+
+fn load_world_mesh() -> Result<Option<Options>, String> {
     let mut args = std::env::args().skip(1);
     let Some(input) = args.next() else {
         return Err("missing map input".into());
@@ -196,9 +262,17 @@ fn load_world_mesh() -> Result<Option<(Bsp, WorldMesh, NoclipPlayer)>, String> {
     }
 
     let mut entry = String::from("maps/wbomb1.bsp");
+    let mut sensitivity = DEFAULT_SENSITIVITY;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--entry" => entry = args.next().ok_or("--entry requires a value")?,
+            "--sensitivity" => {
+                sensitivity = args
+                    .next()
+                    .and_then(|v| v.parse::<f32>().ok())
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .ok_or("--sensitivity requires a positive number")?
+            }
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
@@ -225,11 +299,16 @@ fn load_world_mesh() -> Result<Option<(Bsp, WorldMesh, NoclipPlayer)>, String> {
     for diagnostic in &bsp.diagnostics {
         eprintln!("BSP: {diagnostic}");
     }
-    Ok(Some((bsp, mesh, player)))
+    Ok(Some(Options {
+        bsp,
+        mesh,
+        player,
+        sensitivity,
+    }))
 }
 
 fn main() {
-    let (bsp, world_mesh, player) = match load_world_mesh() {
+    let options = match load_world_mesh() {
         Ok(Some(map)) => map,
         Ok(None) => return,
         Err(e) => {
@@ -246,7 +325,12 @@ fn main() {
         }
     };
     event_loop.set_control_flow(ControlFlow::Poll);
-    if let Err(e) = event_loop.run_app(&mut App::new(bsp, world_mesh, player)) {
+    if let Err(e) = event_loop.run_app(&mut App::new(
+        options.bsp,
+        options.mesh,
+        options.player,
+        options.sensitivity,
+    )) {
         eprintln!("event loop error: {e}");
         std::process::exit(1);
     }
