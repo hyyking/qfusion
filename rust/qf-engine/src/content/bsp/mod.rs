@@ -8,6 +8,7 @@ use std::fmt;
 
 pub mod collision;
 pub mod entities;
+pub mod patch;
 pub use collision::{Trace, TraceError, TracePlane};
 
 pub const LUMP_NAMES: [&str; 18] = [
@@ -45,6 +46,8 @@ const L_FACES: usize = 13;
 
 pub const FACETYPE_PLANAR: i32 = 1;
 pub const FACETYPE_PATCH: i32 = 2;
+/// Surface flag: don't collide against curves with this set.
+pub const SURF_NONSOLID: i32 = 0x4000;
 pub const FACETYPE_TRISURF: i32 = 3;
 pub const FACETYPE_FLARE: i32 = 4;
 pub const FACETYPE_FOLIAGE: i32 = 5;
@@ -125,6 +128,9 @@ pub struct Face {
     pub first_elem: i32,
     pub num_elems: i32,
     pub patch_cp: [i32; 2],
+    /// Compiler-provided bounds; patches sharing them subdivide identically (LOD group).
+    pub lod_mins: [f32; 3],
+    pub lod_maxs: [f32; 3],
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +211,10 @@ pub struct Bsp {
     pub vertices: Vec<Vertex>,
     pub elements: Vec<u32>,
     pub faces: Vec<Face>,
+    /// Collision facets of solid patch faces (legacy `CM_CreatePatch`).
+    pub patches: Vec<patch::PatchCollide>,
+    /// Index into `patches` for each face, if it has collision data.
+    pub face_patch: Vec<Option<usize>>,
     /// Record counts for decoded collision lumps and size-checked fogs.
     pub counts: Counts,
     pub diagnostics: Vec<String>,
@@ -438,6 +448,8 @@ impl Bsp {
                     first_elem: r.i32(o + 20),
                     num_elems: r.i32(o + 24),
                     patch_cp: [r.i32(o + pc), r.i32(o + pc + 4)],
+                    lod_mins: r.f3(o + pc - 36),
+                    lod_maxs: r.f3(o + pc - 24),
                 }
             })
             .collect();
@@ -468,10 +480,13 @@ impl Bsp {
             vertices,
             elements,
             faces,
+            patches: Vec::new(),
+            face_patch: Vec::new(),
             counts,
             diagnostics: Vec::new(),
         };
         bsp.validate()?;
+        bsp.build_patch_collision();
         for (i, &lump_name) in LUMP_NAMES.iter().take(nlumps).enumerate().skip(14) {
             if bsp.lumps[i].len > 0 {
                 bsp.diagnostics.push(format!(
@@ -492,8 +507,9 @@ impl Bsp {
         }
         if by_type[FACETYPE_PATCH as usize] > 0 {
             bsp.diagnostics.push(format!(
-                "{} patch faces (bezier) are not tessellated",
-                by_type[2]
+                "{} patch faces (bezier): tessellated for rendering, {} collidable",
+                by_type[2],
+                bsp.patches.len()
             ));
         }
         for (t, n) in [
@@ -707,7 +723,80 @@ impl Bsp {
         Ok(())
     }
 
-    /// Triangle mesh of a model (0 = world): planar and trisurf faces only.
+    /// Builds collision facets for every solid patch face (legacy `CMod_LoadFace`).
+    fn build_patch_collision(&mut self) {
+        let mut patches = Vec::new();
+        let mut face_patch = vec![None; self.faces.len()];
+        for (index, f) in self.faces.iter().enumerate() {
+            if f.facetype != FACETYPE_PATCH || !patch::valid_control_points(f.patch_cp, f.num_verts)
+            {
+                continue;
+            }
+            let shader = &self.shaders[f.shader as usize];
+            if shader.contents == 0 || shader.surface_flags & SURF_NONSOLID != 0 {
+                continue;
+            }
+            let verts =
+                &self.vertices[f.first_vert as usize..(f.first_vert + f.num_verts) as usize];
+            let points: Vec<[f32; 3]> = verts.iter().map(|v| v.pos).collect();
+            let cp = [f.patch_cp[0] as usize, f.patch_cp[1] as usize];
+            if let Some((mins, maxs, facets)) = patch::build_facets(&points, cp) {
+                face_patch[index] = Some(patches.len());
+                patches.push(patch::PatchCollide {
+                    face: index,
+                    shader: f.shader as usize,
+                    contents: shader.contents,
+                    mins,
+                    maxs,
+                    facets,
+                });
+            }
+        }
+        self.patches = patches;
+        self.face_patch = face_patch;
+    }
+
+    /// Subdivision exponents per patch face. Patches with identical LOD bounds
+    /// share the maximum flatness so neighbouring curves do not crack.
+    fn patch_flatness(&self, level: f32) -> Vec<Option<[u32; 2]>> {
+        use std::collections::HashMap;
+        let key = |f: &Face| -> [u32; 6] {
+            let b = [
+                f.lod_mins[0],
+                f.lod_mins[1],
+                f.lod_mins[2],
+                f.lod_maxs[0],
+                f.lod_maxs[1],
+                f.lod_maxs[2],
+            ];
+            b.map(f32::to_bits)
+        };
+        let mut own = vec![None; self.faces.len()];
+        let mut groups: HashMap<[u32; 6], [u32; 2]> = HashMap::new();
+        for (i, f) in self.faces.iter().enumerate() {
+            if f.facetype != FACETYPE_PATCH || !patch::valid_control_points(f.patch_cp, f.num_verts)
+            {
+                continue;
+            }
+            let points: Vec<[f32; 3]> = self.vertices
+                [f.first_vert as usize..(f.first_vert + f.num_verts) as usize]
+                .iter()
+                .map(|v| v.pos)
+                .collect();
+            let cp = [f.patch_cp[0] as usize, f.patch_cp[1] as usize];
+            let flat = patch::flatness(level, &points, cp);
+            let group = groups.entry(key(f)).or_insert(flat);
+            group[0] = group[0].max(flat[0]);
+            group[1] = group[1].max(flat[1]);
+            own[i] = Some(key(f));
+        }
+        own.iter()
+            .map(|k: &Option<[u32; 6]>| k.map(|k| groups[&k]))
+            .collect()
+    }
+
+    /// Triangle mesh of a model (0 = world): planar and trisurf faces, plus
+    /// patches tessellated at the legacy default `r_subdivisions`.
     pub fn model_mesh(&self, model: usize) -> Result<WorldMesh, BspError> {
         let m = self.models.get(model).ok_or(BspError::IndexOutOfRange {
             what: "model".into(),
@@ -715,7 +804,39 @@ impl Bsp {
             limit: self.models.len(),
         })?;
         let mut mesh = WorldMesh::default();
-        for f in &self.faces[m.first_face as usize..(m.first_face + m.num_faces) as usize] {
+        let mut flatness = None;
+        for (face_index, f) in self.faces
+            [m.first_face as usize..(m.first_face + m.num_faces) as usize]
+            .iter()
+            .enumerate()
+        {
+            if f.facetype == FACETYPE_PATCH {
+                let face_index = m.first_face as usize + face_index;
+                let flat = flatness
+                    .get_or_insert_with(|| self.patch_flatness(patch::RENDER_SUBDIVISIONS))
+                    [face_index];
+                let Some(flat) = flat else {
+                    mesh.skipped_faces += 1;
+                    continue;
+                };
+                let verts =
+                    &self.vertices[f.first_vert as usize..(f.first_vert + f.num_verts) as usize];
+                let positions: Vec<_> = verts.iter().map(|v| v.pos).collect();
+                let normals: Vec<_> = verts.iter().map(|v| v.normal).collect();
+                let uvs: Vec<_> = verts.iter().map(|v| v.uv).collect();
+                let cp = [f.patch_cp[0] as usize, f.patch_cp[1] as usize];
+                let grid = patch::tessellate(&positions, &normals, &uvs, cp, flat);
+                let base = mesh.positions.len() as u32;
+                mesh.positions.extend(grid.positions);
+                mesh.normals.extend(grid.normals);
+                mesh.uvs.extend(grid.uvs);
+                let indices = patch::grid_indices(grid.size);
+                mesh.triangle_shaders
+                    .extend(std::iter::repeat_n(f.shader as u32, indices.len() / 3));
+                mesh.indices.extend(indices.iter().map(|i| base + i));
+                mesh.patch_triangles += indices.len() / 3;
+                continue;
+            }
             if !matches!(f.facetype, FACETYPE_PLANAR | FACETYPE_TRISURF) {
                 mesh.skipped_faces += 1;
                 continue;
@@ -756,6 +877,8 @@ pub struct WorldMesh {
     /// Shader reference index per triangle.
     pub triangle_shaders: Vec<u32>,
     pub skipped_faces: usize,
+    /// Triangles that came from tessellated patches.
+    pub patch_triangles: usize,
 }
 
 impl WorldMesh {

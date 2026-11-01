@@ -33,9 +33,9 @@ The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.
   world mesh 55,639 triangles, all indices in range, finite positions.
 
 ## Left out (reported as diagnostics)
-- Bezier patch faces (220 in wbomb1) are not tessellated; 180 faces are skipped from the world mesh.
+- Bezier patch faces are tessellated into the world mesh (`bsp::patch`, legacy `r_subdivisions` 5, LOD groups by face bounds).
 - Flare and foliage faces are skipped (none in wbomb1).
-- Patch-face collision is not implemented; trace comparisons must avoid patch-only collision surfaces. This is relevant to the 220 Bezier patch faces in wbomb1.
+- Patch collision builds per-quad/triangle facets (legacy `CM_CreatePatch`, flatness 16) and is traced with the brush clipper. Deviations: flatness exponent capped at 6, patches need odd control grids >= 3x3, facet planes capped at 32 with no overflow, submodel patches are not traced, and bounds pre-tests use a swept AABB instead of the SIMD line-distance test.
 - Inline submodel collision is not exposed; `Bsp::trace` tests world model 0 only.
 - Fog records are size-checked but not decoded.
 - Lighting, lightgrid, visibility and lightarray are kept as offset/length only.
@@ -57,4 +57,4 @@ The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.
 - `simulation::pmove` ports `gs_pmove.cpp` (ground/air accel, friction, strafe/bunny, jump, dash, wall jump, crouch slide, water, ladders, step/slide collision, landing); fixed 125 Hz; trigger touching and delta angles are not ported.
 - `tests/pmove_traces.rs` replays `tests/fixtures/pmove_125hz.csv` (legacy harness recording): 9/9 scenarios pass, exact invariants equal, trajectories within 0.05 (max 0.0326).
 - `tests/pmove_bsp.rs` walks on BSP brush collision, kept separate so collision issues are not blamed on movement.
-- Gaps: only the 125 Hz recording, no slope/step/crouch-slide fixtures, patch and submodel collision missing.
+- Gaps: only the 125 Hz recording, no slope/step/crouch-slide fixtures, submodel collision missing.
