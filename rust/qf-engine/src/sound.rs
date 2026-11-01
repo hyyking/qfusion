@@ -443,7 +443,10 @@ mod tests {
         assert_eq!(sounds_for_trigger_event(&pad, [1.0; 3], [2.0; 3]).len(), 1);
         let tele = TriggerEvent::Teleport {
             entity: 0,
-            destination: crate::simulation::entities::Destination::default(),
+            destination: crate::simulation::entities::Destination {
+                origin: [0.0; 3],
+                angles: [0.0; 3],
+            },
             velocity: [0.0; 3],
         };
         let sounds = sounds_for_trigger_event(&tele, [1.0; 3], [2.0; 3]);
