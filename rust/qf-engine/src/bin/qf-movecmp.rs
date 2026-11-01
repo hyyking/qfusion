@@ -22,7 +22,8 @@ use qf_engine::simulation::compare::{
 use qf_engine::simulation::player::NoclipPlayer;
 use qf_engine::simulation::pmove::PmoveRules;
 use qf_engine::simulation::recording::{
-    MapIdentity, Recording, TickResult, record_script, replay, replay_with, sample_script,
+    MapIdentity, Recording, TickResult, record_script, replay, replay_per_step, replay_with,
+    sample_script,
 };
 
 const USAGE: &str = "usage:
@@ -229,7 +230,11 @@ fn compare_command(args: &Args) -> Result<i32, String> {
     let world = BspWorld::new(&bsp);
     let rules = PmoveRules::default();
 
-    let rust = replay(&world, &rules, &recording);
+    let rust = if args.per_step {
+        replay_per_step(&world, &rules, &recording, |_| {})
+    } else {
+        replay(&world, &rules, &recording)
+    };
     let recorded = results(&recording);
     let replay_mismatch = first_exact_mismatch(&rust, &recorded);
     let trigger_ticks = recording.ticks.iter().filter(|t| t.result.trigger).count();
@@ -304,7 +309,12 @@ fn compare_command(args: &Args) -> Result<i32, String> {
                 .map(|(_, call)| call)
                 .collect();
             let logging = LoggingWorld::new(&world, tick, tick);
-            replay_with(&logging, &rules, &recording, |t| logging.set_tick(t));
+            let step = |t: usize| logging.set_tick(t);
+            if args.per_step {
+                replay_per_step(&logging, &rules, &recording, step);
+            } else {
+                replay_with(&logging, &rules, &recording, step);
+            }
             let rust_log = logging.into_log();
             std::fs::write(out_dir.join("rust-trace.txt"), trace_log_to_text(&rust_log))
                 .map_err(|e| e.to_string())?;

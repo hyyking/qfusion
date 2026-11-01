@@ -197,12 +197,36 @@ pub fn replay_with<W: PmoveWorld>(
     world: &W,
     rules: &PmoveRules,
     recording: &Recording,
+    before_tick: impl FnMut(usize),
+) -> Vec<TickResult> {
+    replay_impl(world, rules, recording, false, before_tick)
+}
+
+/// Like [`replay_with`] but restarts every tick from the previous recorded state, so each
+/// step is judged on its own (matching `qf-movecmp --per-step`).
+pub fn replay_per_step<W: PmoveWorld>(
+    world: &W,
+    rules: &PmoveRules,
+    recording: &Recording,
+    before_tick: impl FnMut(usize),
+) -> Vec<TickResult> {
+    replay_impl(world, rules, recording, true, before_tick)
+}
+
+fn replay_impl<W: PmoveWorld>(
+    world: &W,
+    rules: &PmoveRules,
+    recording: &Recording,
+    per_step: bool,
     mut before_tick: impl FnMut(usize),
 ) -> Vec<TickResult> {
     let mut state = recording.initial.state;
     let mut out = Vec::with_capacity(recording.ticks.len());
     for (index, tick) in recording.ticks.iter().enumerate() {
         before_tick(index);
+        if per_step && index > 0 {
+            apply_recorded(&mut state, &recording.ticks[index - 1].result);
+        }
         state.pm_type = PmType::Normal;
         let result = if recording.touch_hook {
             pmove_with_touch(world, rules, &mut state, &tick.command, &mut NoTouch)
