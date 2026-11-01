@@ -91,3 +91,39 @@ else()
     target_link_libraries(pmove_trace PRIVATE m)
 endif()
 qf_set_output_dir(pmove_trace "")
+
+# Replays Rust-port movement recordings through gs_pmove.cpp on a real BSP (see
+# docs/movement-recording.md). Unlike pmove_trace it links the actual collision model.
+add_executable(pmove_replay
+    tools/pmove_replay.cpp
+    facilities/gs_pmove.cpp
+    facilities/gs_slidebox.cpp
+    facilities/cm_main.cpp
+    facilities/cm_q3bsp.cpp
+    facilities/cm_sample.cpp
+    facilities/cm_trace.cpp
+    facilities/cm_trace_avx.cpp
+    facilities/cm_trace_sse42.cpp
+    facilities/bsp.cpp
+    helpers/exceptions.cpp
+    helpers/q_math.cpp
+    helpers/q_libc.cpp
+    helpers/md5.cpp
+    helpers/parsecompat.cpp
+    helpers/patch.cpp
+    helpers/glob.cpp
+    helpers/textstreamwriter.cpp
+    types/podvector.cpp
+    types/stringview.cpp)
+if (MSVC)
+    target_compile_options(pmove_replay PRIVATE /Gy)
+    set_property(TARGET pmove_replay APPEND_STRING PROPERTY LINK_FLAGS " /OPT:REF")
+elseif (APPLE)
+    target_compile_options(pmove_replay PRIVATE -ffunction-sections -fdata-sections)
+    set_property(TARGET pmove_replay APPEND_STRING PROPERTY LINK_FLAGS " -Wl,-dead_strip")
+else()
+    target_compile_options(pmove_replay PRIVATE -ffunction-sections -fdata-sections)
+    set_property(TARGET pmove_replay APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+    target_link_libraries(pmove_replay PRIVATE m)
+endif()
+qf_set_output_dir(pmove_replay "")

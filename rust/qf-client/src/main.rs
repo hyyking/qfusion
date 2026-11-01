@@ -8,7 +8,7 @@ mod render;
 mod tone;
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,15 +17,15 @@ use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
 use qf_engine::simulation::bsp_world::BspWorld;
 use qf_engine::simulation::entities::MapEntities;
 use qf_engine::simulation::player::NoclipPlayer;
-use qf_engine::simulation::walk::{ModeSimulation, WalkCommand};
+use qf_engine::simulation::recording::{MapIdentity, Recorder};
+use qf_engine::simulation::walk::{ModeSimulation, MovementMode, WalkCommand};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-const USAGE: &str =
-    "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0]";
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--record FILE]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
 
 /// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
 /// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
@@ -49,6 +49,10 @@ struct App {
     pressed_keys: HashSet<KeyCode>,
     right_mouse_down: bool,
     hud_ups: hud::UpsCounter,
+    hud_record: hud::RecordIndicator,
+    recorder: Option<Recorder>,
+    record_path: Option<PathBuf>,
+    map: MapIdentity,
     hud_canvas: hud::Canvas,
     sensitivity: f32,
     mouse_grabbed: bool,
@@ -60,7 +64,14 @@ struct App {
 }
 
 impl App {
-    fn new(bsp: Bsp, world_mesh: WorldMesh, player: NoclipPlayer, sensitivity: f32) -> Self {
+    fn new(
+        bsp: Bsp,
+        world_mesh: WorldMesh,
+        player: NoclipPlayer,
+        sensitivity: f32,
+        map: MapIdentity,
+        record_path: Option<PathBuf>,
+    ) -> Self {
         let mut simulation = ModeSimulation::new(player);
         let entities = MapEntities::spawn(&bsp.parsed_entities, &bsp);
         for warning in entities.warnings() {
@@ -83,7 +94,7 @@ impl App {
                 None
             }
         };
-        Self {
+        let mut app = Self {
             window: None,
             renderer: None,
             audio,
@@ -94,12 +105,81 @@ impl App {
             pressed_keys: HashSet::new(),
             right_mouse_down: false,
             hud_ups: hud::UpsCounter::new(),
+            hud_record: hud::RecordIndicator::new(),
+            recorder: None,
+            record_path: None,
+            map,
             hud_canvas: hud::Canvas::default(),
             sensitivity,
             mouse_grabbed: false,
             skip_next_motion: false,
             mouse_delta: [0.0; 2],
             last_frame: None,
+        };
+        if let Some(path) = record_path {
+            app.start_recording(Some(path));
+        }
+        app
+    }
+
+    /// Starts recording walking ticks. Recording only copies each tick's command and result,
+    /// so it cannot change the simulation.
+    fn start_recording(&mut self, path: Option<PathBuf>) {
+        let MovementMode::Walk(player) = self.simulation.mode() else {
+            self.hud_record.show_message("REC NEED WALK");
+            eprintln!("recording needs walk mode");
+            return;
+        };
+        // Entities are installed, so live ticks take the trigger-aware path.
+        let generator = concat!("qf-client ", env!("CARGO_PKG_VERSION"));
+        self.recorder = Some(Recorder::start(
+            self.map.clone(),
+            generator,
+            125,
+            self.simulation.entities().is_some(),
+            &player.state,
+        ));
+        self.record_path = Some(path.unwrap_or_else(default_recording_path));
+        self.simulation.set_tick_logging(true);
+        self.hud_record.set_recording(0);
+        println!("recording started");
+    }
+
+    /// Drains logged ticks into the recorder; stops and saves if the player left walk mode.
+    fn collect_recorded_ticks(&mut self) {
+        let Some(recorder) = &mut self.recorder else {
+            return;
+        };
+        for entry in self.simulation.take_tick_log() {
+            recorder.push(&entry);
+        }
+        let ticks = recorder.tick_count();
+        if self.simulation.mode().is_walking() {
+            self.hud_record.set_recording(ticks);
+        } else {
+            self.stop_recording();
+        }
+    }
+
+    fn stop_recording(&mut self) {
+        self.simulation.set_tick_logging(false);
+        let (Some(recorder), Some(path)) = (self.recorder.take(), self.record_path.take()) else {
+            return;
+        };
+        let recording = recorder.finish();
+        match std::fs::write(&path, recording.to_text()) {
+            Ok(()) => {
+                println!(
+                    "saved recording: {} ticks -> {}",
+                    recording.ticks.len(),
+                    path.display()
+                );
+                self.hud_record.show_message("REC SAVED");
+            }
+            Err(e) => {
+                eprintln!("failed to save recording {}: {e}", path.display());
+                self.hud_record.show_message("REC FAILED");
+            }
         }
     }
 
@@ -224,6 +304,13 @@ impl ApplicationHandler for App {
                                 (self.sensitivity - SENSITIVITY_STEP).max(MIN_SENSITIVITY);
                             println!("sensitivity {}", self.sensitivity);
                         }
+                        Key::Named(NamedKey::F9) => {
+                            if self.recorder.is_some() {
+                                self.stop_recording();
+                            } else {
+                                self.start_recording(None);
+                            }
+                        }
                         Key::Character(ref key) if key.eq_ignore_ascii_case("b") => {
                             self.play_sound()
                         }
@@ -291,6 +378,7 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
+                self.collect_recorded_ticks();
                 // Teleporters rewrite the look direction.
                 self.view_angles = self.simulation.mode().view().1;
                 for event in self.simulation.drain_trigger_events() {
@@ -313,7 +401,12 @@ impl ApplicationHandler for App {
                         frame_seconds: elapsed.as_secs_f32(),
                     });
                     self.hud_canvas.clear();
+                    self.hud_record.update(&hud::HudState {
+                        velocity: [0.0; 3],
+                        frame_seconds: elapsed.as_secs_f32(),
+                    });
                     self.hud_ups.draw(&screen, &mut self.hud_canvas);
+                    self.hud_record.draw(&screen, &mut self.hud_canvas);
                     r.render(eye, self.view_angles, &self.hud_canvas);
                 }
                 if let Some(w) = &self.window {
@@ -323,6 +416,17 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.stop_recording();
+    }
+}
+
+fn default_recording_path() -> PathBuf {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    PathBuf::from(format!("qf-recording-{seconds}.qfrec"))
 }
 
 struct Options {
@@ -330,6 +434,8 @@ struct Options {
     mesh: WorldMesh,
     player: NoclipPlayer,
     sensitivity: f32,
+    map: MapIdentity,
+    record_path: Option<PathBuf>,
 }
 
 fn load_world_mesh() -> Result<Option<Options>, String> {
@@ -344,6 +450,7 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
 
     let mut entry = String::from("maps/wbomb1.bsp");
     let mut sensitivity = DEFAULT_SENSITIVITY;
+    let mut record_path = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--entry" => entry = args.next().ok_or("--entry requires a value")?,
@@ -353,6 +460,11 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
                     .and_then(|v| v.parse::<f32>().ok())
                     .filter(|v| v.is_finite() && *v > 0.0)
                     .ok_or("--sensitivity requires a positive number")?
+            }
+            "--record" => {
+                record_path = Some(PathBuf::from(
+                    args.next().ok_or("--record requires a file")?,
+                ))
             }
             _ => return Err(format!("unknown argument {arg}")),
         }
@@ -365,6 +477,15 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
         std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?
     };
     let bsp = Bsp::parse(&data).map_err(|e| e.to_string())?;
+    let is_pk3 = input.to_lowercase().ends_with(".pk3");
+    let (map_entry, map_name) = if is_pk3 {
+        let stem = Path::new(&entry).file_stem().and_then(|s| s.to_str());
+        (entry.clone(), stem.unwrap_or("map").to_string())
+    } else {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("map");
+        (format!("maps/{stem}.bsp"), stem.to_string())
+    };
+    let map = MapIdentity::of_bsp(&map_name, &map_entry, &data);
     let player = NoclipPlayer::spawn(&bsp.parsed_entities).map_err(|e| e.to_string())?;
     let mesh = bsp.model_mesh(0).map_err(|e| e.to_string())?;
 
@@ -385,6 +506,8 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
         mesh,
         player,
         sensitivity,
+        map,
+        record_path,
     }))
 }
 
@@ -411,6 +534,8 @@ fn main() {
         options.mesh,
         options.player,
         options.sensitivity,
+        options.map,
+        options.record_path,
     )) {
         eprintln!("event loop error: {e}");
         std::process::exit(1);

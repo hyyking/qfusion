@@ -141,6 +141,21 @@ fn glyph(ch: char) -> Option<[u8; GLYPH_HEIGHT]> {
         'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
         'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
         'S' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
+        'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
+        'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+        'C' => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
+        'D' => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],
+        'A' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
+        'I' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
+        'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A],
+        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+        'T' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'H' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
         _ => return None,
     })
 }
@@ -235,6 +250,100 @@ impl HudElement for UpsCounter {
     }
 }
 
+/// What the recording indicator currently shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordStatus {
+    Idle,
+    Recording {
+        ticks: usize,
+    },
+    /// A status message (for example "REC SAVED") shown for a few seconds.
+    Message(&'static str),
+}
+
+/// Movement-recording indicator in the top-left corner: a red dot with the tick count while
+/// recording, then a short status message when a recording is saved or refused.
+pub struct RecordIndicator {
+    anchor: Anchor,
+    status: RecordStatus,
+    message_left: f32,
+    text: String,
+}
+
+impl RecordIndicator {
+    pub const MESSAGE_SECONDS: f32 = 4.0;
+    const PIXEL: f32 = 3.0;
+
+    pub fn new() -> Self {
+        Self {
+            anchor: Anchor {
+                horizontal: HAnchor::Left,
+                vertical: VAnchor::Top,
+                margin: [16.0, 16.0],
+            },
+            status: RecordStatus::Idle,
+            message_left: 0.0,
+            text: String::with_capacity(16),
+        }
+    }
+
+    pub fn status(&self) -> RecordStatus {
+        self.status
+    }
+
+    pub fn set_recording(&mut self, ticks: usize) {
+        self.status = RecordStatus::Recording { ticks };
+        self.text.clear();
+        let _ = write!(self.text, "REC {ticks}");
+    }
+
+    pub fn show_message(&mut self, message: &'static str) {
+        self.status = RecordStatus::Message(message);
+        self.message_left = Self::MESSAGE_SECONDS;
+        self.text.clear();
+        self.text.push_str(message);
+    }
+}
+
+impl Default for RecordIndicator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HudElement for RecordIndicator {
+    fn update(&mut self, state: &HudState) {
+        if let RecordStatus::Message(_) = self.status {
+            self.message_left -= state.frame_seconds;
+            if self.message_left <= 0.0 {
+                self.status = RecordStatus::Idle;
+                self.text.clear();
+            }
+        }
+    }
+
+    fn draw(&self, screen: &Screen, canvas: &mut Canvas) {
+        let pixel = Self::PIXEL * screen.scale;
+        let (dot, color) = match self.status {
+            RecordStatus::Idle => return,
+            RecordStatus::Recording { .. } => (true, [1.0, 0.2, 0.2, 1.0]),
+            RecordStatus::Message(_) => (false, [1.0, 1.0, 1.0, 1.0]),
+        };
+        let text = text_size(self.text.chars().count(), pixel);
+        let dot_size = if dot { text[1] + pixel * 2.0 } else { 0.0 };
+        let [x, y] = self.anchor.place(screen, [dot_size + text[0], text[1]]);
+        if dot {
+            canvas.rects.push(Rect {
+                x,
+                y,
+                w: text[1],
+                h: text[1],
+                color,
+            });
+        }
+        canvas.shadowed_text(&self.text, [x + dot_size, y], pixel, color);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +423,44 @@ mod tests {
         assert!(((min_x + max_x) * 0.5 - 500.0).abs() < 4.0, "centered");
         let max_y = canvas.rects.iter().map(|r| r.y + r.h).fold(0.0, f32::max);
         assert!(max_y < 600.0 && max_y > 500.0, "bottom area, got {max_y}");
+    }
+
+    #[test]
+    fn indicator_is_hidden_until_recording() {
+        let mut rec = RecordIndicator::new();
+        let mut canvas = Canvas::default();
+        rec.draw(&SCREEN, &mut canvas);
+        assert!(canvas.rects.is_empty());
+        rec.set_recording(42);
+        assert_eq!(rec.status(), RecordStatus::Recording { ticks: 42 });
+        rec.draw(&SCREEN, &mut canvas);
+        assert!(!canvas.rects.is_empty());
+        assert!(
+            canvas.rects.iter().all(|r| r.x < 200.0 && r.y < 100.0),
+            "top-left"
+        );
+    }
+
+    #[test]
+    fn status_message_expires() {
+        let mut rec = RecordIndicator::new();
+        rec.show_message("REC SAVED");
+        let tick = |dt| HudState {
+            velocity: [0.0; 3],
+            frame_seconds: dt,
+        };
+        rec.update(&tick(1.0));
+        assert_eq!(rec.status(), RecordStatus::Message("REC SAVED"));
+        rec.update(&tick(RecordIndicator::MESSAGE_SECONDS));
+        assert_eq!(rec.status(), RecordStatus::Idle);
+    }
+
+    #[test]
+    fn status_message_letters_all_have_glyphs() {
+        for word in ["REC SAVED", "REC FAILED", "REC NEED WALK", "REC STOPPED"] {
+            for ch in word.chars().filter(|c| *c != ' ') {
+                assert!(glyph(ch).is_some(), "missing glyph {ch}");
+            }
+        }
     }
 }

@@ -193,3 +193,7 @@ complete that cross-check, run the same command sequence and map in a legacy
 Warsow client/server build, record per-command origin/velocity/ground state and
 events, and compare the exact invariants and float tolerances above. Do not
 change legacy movement semantics merely to force a deterministic match.
+
+## Comparing recorded client movement
+
+See [movement-recording.md](movement-recording.md) for recording a real client run and comparing it tick by tick with the legacy Pmove on the real wbomb1 BSP (pmove_replay, qf-movecmp).
