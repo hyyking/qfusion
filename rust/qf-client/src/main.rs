@@ -23,9 +23,9 @@ use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
-use winit::window::{CursorGrabMode, Window, WindowId};
+use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
-const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay]";
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen]";
 
 /// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
 /// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
@@ -61,6 +61,8 @@ struct App {
     /// Raw motion accumulated since the last frame; consumed once per redraw.
     mouse_delta: [f64; 2],
     last_frame: Option<Instant>,
+    /// Start in borderless fullscreen (`--fullscreen`).
+    fullscreen: bool,
 }
 
 impl App {
@@ -108,6 +110,7 @@ impl App {
             skip_next_motion: false,
             mouse_delta: [0.0; 2],
             last_frame: None,
+            fullscreen: false,
         };
         app.start_audio();
         app
@@ -153,6 +156,27 @@ impl App {
         self.mouse_delta = [0.0; 2];
     }
 
+    fn alt_held(&self) -> bool {
+        self.pressed_keys.contains(&KeyCode::AltLeft)
+            || self.pressed_keys.contains(&KeyCode::AltRight)
+    }
+
+    /// Borderless fullscreen on the current monitor. The surface is resized by the `Resized`
+    /// event the window system sends; the grab is re-applied because some platforms drop it on
+    /// a mode change. `view_angles` is client-owned, so look direction is untouched.
+    fn toggle_fullscreen(&mut self) {
+        let Some(window) = &self.window else { return };
+        let fullscreen = window.fullscreen().is_none();
+        window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
+        if let Some(r) = &mut self.renderer {
+            let size = window.inner_size();
+            r.resize(size.width, size.height);
+        }
+        if self.mouse_grabbed {
+            self.set_mouse_grab(true);
+        }
+    }
+
     fn play_sound(&mut self) {
         if self.audio.is_none() {
             self.start_audio();
@@ -169,7 +193,8 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("qfusion - WASD move, Space jump, C crouch, Right mouse/Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B test sound, +/- sensitivity, Esc release mouse, Shift+Esc quit");
+            .with_title("qfusion - WASD move, Space jump, C crouch, Right mouse/Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B test sound, +/- sensitivity, F11/Alt+Enter fullscreen, Esc release mouse, Shift+Esc quit")
+            .with_fullscreen(self.fullscreen.then_some(Fullscreen::Borderless(None)));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -235,6 +260,8 @@ impl ApplicationHandler for App {
                 }
                 if event.state == ElementState::Pressed && !event.repeat {
                     match event.logical_key {
+                        Key::Named(NamedKey::F11) => self.toggle_fullscreen(),
+                        Key::Named(NamedKey::Enter) if self.alt_held() => self.toggle_fullscreen(),
                         Key::Named(NamedKey::Escape) => {
                             let shift = self.pressed_keys.contains(&KeyCode::ShiftLeft)
                                 || self.pressed_keys.contains(&KeyCode::ShiftRight);
@@ -293,6 +320,12 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(true) => self.set_mouse_grab(true),
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
+                    r.resize(size.width, size.height);
+                }
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let (Some(r), Some(w)) = (&mut self.renderer, &self.window) {
+                    let size = w.inner_size();
                     r.resize(size.width, size.height);
                 }
             }
@@ -425,6 +458,7 @@ struct Options {
     sensitivity: f32,
     game_dirs: Vec<PathBuf>,
     map_pk3: Option<PathBuf>,
+    fullscreen: bool,
 }
 
 fn load_world_mesh() -> Result<Option<Options>, String> {
@@ -442,8 +476,10 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
     let mut game_dirs = Vec::new();
     let mut team = Team::Alpha;
     let mut freeplay = false;
+    let mut fullscreen = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--fullscreen" => fullscreen = true,
             "--freeplay" => freeplay = true,
             "--team" => {
                 team = match args.next().as_deref() {
@@ -504,6 +540,7 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
         player,
         sensitivity,
         game_dirs,
+        fullscreen,
         map_pk3: input
             .to_lowercase()
             .ends_with(".pk3")
@@ -529,7 +566,7 @@ fn main() {
         }
     };
     event_loop.set_control_flow(ControlFlow::Poll);
-    if let Err(e) = event_loop.run_app(&mut App::new(
+    let mut app = App::new(
         options.bsp,
         options.bomb,
         options.mesh,
@@ -537,7 +574,9 @@ fn main() {
         options.sensitivity,
         options.game_dirs,
         options.map_pk3,
-    )) {
+    );
+    app.fullscreen = options.fullscreen;
+    if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop error: {e}");
         std::process::exit(1);
     }
