@@ -2,10 +2,10 @@ use crate::content::bsp::Bsp;
 
 use super::pmove::{CONTENTS_PLAYERCLIP, CONTENTS_SOLID, MASK_WATER, PmTrace, PmoveWorld, Vec3};
 
-/// Movement collision against world model 0 of a parsed BSP.
+/// Static movement collision against world model 0 of a parsed BSP.
 ///
-/// Only brush collision is available: patch faces and inline submodels are
-/// not collidable yet, and every hit reports entity 0 (the world).
+/// Patch faces are collidable; inline submodels are not (movers wrap this in
+/// `entities::MoverWorld`), and every hit reports entity 0 (the world).
 pub struct BspWorld<'a> {
     bsp: &'a Bsp,
 }

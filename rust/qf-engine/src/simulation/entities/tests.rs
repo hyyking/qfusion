@@ -731,6 +731,7 @@ fn every_supported_classname_is_instantiated() {
         .iter()
         .chain(SUPPORTED_ACTIONS)
         .chain(SUPPORTED_TARGETS)
+        .chain(SUPPORTED_MOVERS)
     {
         // Volumes need a model, teleporters and pads need a target.
         let entities = [

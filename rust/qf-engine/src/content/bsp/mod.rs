@@ -9,7 +9,7 @@ use std::fmt;
 pub mod collision;
 pub mod entities;
 pub mod patch;
-pub use collision::{Trace, TraceError, TracePlane};
+pub use collision::{ModelPose, Trace, TraceError, TracePlane};
 
 pub const LUMP_NAMES: [&str; 18] = [
     "entities",

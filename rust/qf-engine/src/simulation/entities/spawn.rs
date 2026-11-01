@@ -130,6 +130,8 @@ pub(super) fn spawn_all<M: BrushModels + ?Sized>(
         }
     }
 
+    super::movers::spawn_all(&mut world, lump, models);
+
     Spawned {
         world,
         warnings,
@@ -173,6 +175,10 @@ impl<M: BrushModels + ?Sized> Spawner<'_, M> {
             "func_killbox" => {
                 let volume = self.volume()?;
                 self.insert((volume, UseKind::Killbox));
+            }
+            "func_door" | "func_door_rotating" | "func_plat" | "func_button" | "func_rotating" => {
+                // Validates the model; the mover itself is built after all entities exist.
+                self.volume()?;
             }
             // Aiming points, destinations and entities with no effect on the player:
             // `trigger_gravity` only sets `edict_t::gravity`, which pmove never reads.

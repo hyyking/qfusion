@@ -33,13 +33,19 @@ use std::fmt;
 use bevy_ecs::prelude::World;
 
 use crate::content::bsp::entities::Entity;
+use crate::content::bsp::{ModelPose, Trace, TracePlane};
+
+const CONTENT_SOLID: u32 = super::pmove::CONTENTS_SOLID;
 
 #[cfg(test)]
 use super::pmove::{PMF_ON_GROUND, PMF_TIME_TELEPORT, PmEvent, PmType};
-use super::pmove::{PmoveState, PmoveTouch, PredictedEvent, TouchContext, Vec3};
+use super::pmove::{PmoveState, PmoveTouch, PmoveWorld, PredictedEvent, TouchContext, Vec3};
 
 mod components;
 mod logic;
+#[cfg(test)]
+mod mover_tests;
+mod movers;
 mod parse;
 mod spawn;
 #[cfg(test)]
@@ -48,10 +54,21 @@ mod tests;
 #[cfg(test)]
 use parse::atof;
 
+pub use movers::{MoverWorld, PushedPlayer};
+
 use components::{Classname, Level, LumpIndex, Occupants, Registry, TouchKind};
 
 /// Legacy `g_gravity` default, used when worldspawn has no `gravity` key.
 pub const DEFAULT_LEVEL_GRAVITY: f32 = 850.0;
+
+/// Brush movers stepped by [`MapEntities::step_movers`].
+pub const SUPPORTED_MOVERS: &[&str] = &[
+    "func_door",
+    "func_door_rotating",
+    "func_plat",
+    "func_button",
+    "func_rotating",
+];
 
 /// Classnames with a volume or a think that fire targets.
 pub const SUPPORTED_TRIGGERS: &[&str] = &[
@@ -94,6 +111,98 @@ pub trait BrushModels {
     fn model_bounds(&self, index: usize) -> Option<(Vec3, Vec3)>;
     /// Whether an absolute box touches the model translated by `origin`.
     fn box_touches_model(&self, index: usize, origin: Vec3, mins: Vec3, maxs: Vec3) -> bool;
+    /// `CM_TransformedBoxTrace` against inline model `index` at `pose`, for a
+    /// `(start, end, mins, maxs)` sweep. `None` when the model cannot be hit.
+    ///
+    /// The default sweeps against the model's bounding box, ignoring rotation.
+    fn trace_model(
+        &self,
+        index: usize,
+        pose: &ModelPose,
+        sweep: (Vec3, Vec3, Vec3, Vec3),
+        _mask: u32,
+    ) -> Option<Trace> {
+        let (bmins, bmaxs) = self.model_bounds(index)?;
+        let (start, end, mins, maxs) = sweep;
+        Some(sweep_box(
+            std::array::from_fn(|axis| bmins[axis] + pose.origin[axis] - maxs[axis]),
+            std::array::from_fn(|axis| bmaxs[axis] + pose.origin[axis] - mins[axis]),
+            start,
+            end,
+        ))
+    }
+}
+
+/// Ray against the open box `lo..hi`, with the legacy 1/32 unit clip epsilon.
+fn sweep_box(lo: Vec3, hi: Vec3, start: Vec3, end: Vec3) -> Trace {
+    const EPSILON: f32 = 1.0 / 32.0;
+    let miss = Trace {
+        fraction: 1.0,
+        end_position: end,
+        plane: None,
+        contents: 0,
+        surface_flags: 0,
+        shader: None,
+        start_solid: false,
+        all_solid: false,
+    };
+    let inside = |point: Vec3| (0..3).all(|axis| point[axis] > lo[axis] && point[axis] < hi[axis]);
+    if inside(start) {
+        return Trace {
+            fraction: 0.0,
+            end_position: start,
+            contents: CONTENT_SOLID,
+            start_solid: true,
+            all_solid: inside(end),
+            ..miss
+        };
+    }
+    let (mut enter, mut leave) = (f32::NEG_INFINITY, f32::INFINITY);
+    let mut normal = [0.0; 3];
+    for axis in 0..3 {
+        let delta = end[axis] - start[axis];
+        if delta == 0.0 {
+            if start[axis] <= lo[axis] || start[axis] >= hi[axis] {
+                return miss;
+            }
+            continue;
+        }
+        let (near, far, sign) = if delta > 0.0 {
+            (lo[axis], hi[axis], -1.0)
+        } else {
+            (hi[axis], lo[axis], 1.0)
+        };
+        let t_near = (near - start[axis]) / delta;
+        let t_far = (far - start[axis]) / delta;
+        if t_near > enter {
+            enter = t_near;
+            normal = [0.0; 3];
+            normal[axis] = sign;
+        }
+        leave = leave.min(t_far);
+    }
+    if enter >= leave || !(0.0..1.0).contains(&enter) {
+        return miss;
+    }
+    let length = length_of(sub_v(end, start));
+    let fraction = (enter - EPSILON / length.max(EPSILON)).max(0.0);
+    Trace {
+        fraction,
+        end_position: std::array::from_fn(|axis| {
+            start[axis] + (end[axis] - start[axis]) * fraction
+        }),
+        plane: Some(TracePlane { normal, dist: 0.0 }),
+        contents: CONTENT_SOLID,
+        ..miss
+    }
+}
+
+fn sub_v(a: Vec3, b: Vec3) -> Vec3 {
+    std::array::from_fn(|axis| a[axis] - b[axis])
+}
+
+fn length_of(a: Vec3) -> f32 {
+    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
 }
 
 impl BrushModels for crate::content::bsp::Bsp {
@@ -105,6 +214,18 @@ impl BrushModels for crate::content::bsp::Bsp {
         // MASK_ALL: trigger brushes carry no solid contents.
         self.box_touches_model(index, origin, mins, maxs, u32::MAX)
             .unwrap_or(false)
+    }
+
+    fn trace_model(
+        &self,
+        index: usize,
+        pose: &ModelPose,
+        sweep: (Vec3, Vec3, Vec3, Vec3),
+        mask: u32,
+    ) -> Option<Trace> {
+        let (start, end, mins, maxs) = sweep;
+        self.trace_model(index, pose, (start, end, mins, maxs), mask)
+            .ok()
     }
 }
 
@@ -201,6 +322,32 @@ pub enum TriggerEvent {
         entity: usize,
         victim: Victim,
     },
+    /// A mover pushed against the player and deals crush damage (`MOD_CRUSH`).
+    Crush {
+        entity: usize,
+        damage: i32,
+    },
+}
+
+/// Current placement of a brush mover; model `model` is drawn and collided at
+/// `origin` rotated by `angles` (pitch positive down, yaw, roll).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoverPose {
+    /// Position in the entity lump, also the entity number of its trace hits.
+    pub entity: usize,
+    pub model: usize,
+    pub origin: Vec3,
+    pub angles: Vec3,
+}
+
+impl MoverPose {
+    /// Maps a point in the model's own space to world space.
+    pub fn local_to_world(&self, local: Vec3) -> Vec3 {
+        let [forward, left, up] = movers::axis_rows(self.angles);
+        std::array::from_fn(|i| {
+            self.origin[i] + forward[i] * local[0] + left[i] * local[1] + up[i] * local[2]
+        })
+    }
 }
 
 /// Why an entity with a supported classname was not instantiated.
@@ -348,6 +495,41 @@ impl MapEntities {
         self.world.resource_mut::<components::Player>().0 = None;
         logic::use_entity(&mut self.world, target);
         true
+    }
+
+    /// Current pose of every brush mover, in lump order.
+    pub fn mover_poses(&self) -> Vec<MoverPose> {
+        movers::poses(&self.world)
+    }
+
+    /// Runs the movers for one tick, after the player's movement: thinks and
+    /// pushers in legacy order. `player` is carried, pushed or crushed.
+    pub fn step_movers(
+        &mut self,
+        models: &dyn BrushModels,
+        world: &dyn PmoveWorld,
+        time_ms: i64,
+        player: Option<PushedPlayer<'_>>,
+    ) {
+        self.world.resource_mut::<components::Player>().0 = None;
+        movers::step(&mut self.world, models, world, time_ms, player);
+    }
+
+    /// Entities the player touched during a movement command (`touch_entities`
+    /// of the pmove result): walking into a solid button presses it.
+    pub fn player_touched(&mut self, entities: &[i32], time_ms: i64) {
+        for &entity in entities {
+            if let Ok(lump) = usize::try_from(entity) {
+                movers::touched_by_player(&mut self.world, lump, time_ms);
+            }
+        }
+    }
+
+    /// Damages a shootable door or button (`health` key). Returns whether the
+    /// entity is a shootable mover. Weapons are not simulated, so callers
+    /// provide the damage.
+    pub fn damage_mover(&mut self, entity: usize, damage: i32, time_ms: i64) -> bool {
+        movers::shoot(&mut self.world, entity, damage, time_ms)
     }
 
     /// Binds the entities to a world and a level time for one movement tick.

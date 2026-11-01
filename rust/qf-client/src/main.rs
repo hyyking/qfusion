@@ -177,7 +177,21 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         };
-        match render::Renderer::new(window.clone(), &world_mesh) {
+        let mut submodels: Vec<(usize, WorldMesh)> = Vec::new();
+        for pose in self
+            .simulation
+            .entities()
+            .map(|e| e.mover_poses())
+            .unwrap_or_default()
+        {
+            if submodels.iter().all(|(m, _)| *m != pose.model) {
+                match self.bsp.model_mesh(pose.model) {
+                    Ok(mesh) => submodels.push((pose.model, mesh)),
+                    Err(e) => eprintln!("mover model *{}: {e}", pose.model),
+                }
+            }
+        }
+        match render::Renderer::new(window.clone(), &world_mesh, submodels) {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
                 eprintln!("failed to initialize renderer: {e}");
@@ -332,7 +346,12 @@ impl ApplicationHandler for App {
                     });
                     self.hud_canvas.clear();
                     self.hud_ups.draw(&screen, &mut self.hud_canvas);
-                    r.render(eye, self.view_angles, &self.hud_canvas);
+                    let movers = self
+                        .simulation
+                        .entities()
+                        .map(|e| e.mover_poses())
+                        .unwrap_or_default();
+                    r.render(eye, self.view_angles, &movers, &self.hud_canvas);
                 }
                 if let Some(w) = &self.window {
                     w.request_redraw();

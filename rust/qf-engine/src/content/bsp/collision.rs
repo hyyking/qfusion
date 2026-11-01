@@ -35,6 +35,30 @@ impl std::fmt::Display for TraceError {
 
 impl std::error::Error for TraceError {}
 
+/// Placement of an inline model: translation plus an optional rotation.
+///
+/// `axis` holds the rows of the world-to-model rotation (`AnglesToAxis`:
+/// forward, left, up). `None` means unrotated.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelPose {
+    pub origin: [f32; 3],
+    pub axis: Option<[[f32; 3]; 3]>,
+}
+
+impl ModelPose {
+    pub fn translated(origin: [f32; 3]) -> Self {
+        Self { origin, axis: None }
+    }
+
+    fn world_to_local(&self, point: [f32; 3]) -> [f32; 3] {
+        let shifted = std::array::from_fn(|axis| point[axis] - self.origin[axis]);
+        match self.axis {
+            Some(rows) => std::array::from_fn(|row| dot(rows[row], shifted)),
+            None => shifted,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Segment {
     node: i32,
@@ -213,9 +237,9 @@ impl Bsp {
     /// Tests whether an absolute-coordinate box touches an inline brush model.
     ///
     /// Mirrors the legacy `GClip_EntityContact` for brush models: a zero-length
-    /// box trace against the model's brushes translated by `origin`, where
-    /// "start solid" means overlap (touching faces count). Rotated models and
-    /// patch faces are not supported. Model 0 is the world and is rejected.
+    /// box trace against the model translated by `origin` (brushes and patch
+    /// faces), where "start solid" means overlap (touching faces count).
+    /// Model 0 is the world and is rejected.
     pub fn box_touches_model(
         &self,
         model: usize,
@@ -235,35 +259,112 @@ impl Bsp {
         if (0..3).any(|axis| mins[axis] > maxs[axis]) {
             return Err(TraceError::InvertedBounds);
         }
-        let Some(model) = self.models.get(model).filter(|_| model != 0) else {
-            return Ok(false);
+        let trace = self.trace_model(
+            model,
+            &ModelPose::translated(origin),
+            ([0.0; 3], [0.0; 3], mins, maxs),
+            contents_mask,
+        );
+        Ok(trace.is_ok_and(|t| t.start_solid))
+    }
+
+    /// Sweeps a box through an inline brush model placed at `pose`
+    /// (`CM_TransformedBoxTrace`).
+    ///
+    /// The end points are moved into the model's frame, so the box itself is
+    /// never rotated; the hit plane normal is rotated back to world space.
+    /// Brushes and solid patch faces of the model are both clipped. Model 0
+    /// and unknown models never hit.
+    pub fn trace_model(
+        &self,
+        model: usize,
+        pose: &ModelPose,
+        sweep: ([f32; 3], [f32; 3], [f32; 3], [f32; 3]),
+        contents_mask: u32,
+    ) -> Result<Trace, TraceError> {
+        let (start, end, mins, maxs) = sweep;
+        if start
+            .iter()
+            .chain(end.iter())
+            .chain(mins.iter())
+            .chain(maxs.iter())
+            .chain(pose.origin.iter())
+            .any(|x| !x.is_finite())
+        {
+            return Err(TraceError::NonFiniteInput);
+        }
+        if (0..3).any(|axis| mins[axis] > maxs[axis]) {
+            return Err(TraceError::InvertedBounds);
+        }
+        let mut result = Trace {
+            fraction: 1.0,
+            end_position: end,
+            plane: None,
+            contents: 0,
+            surface_flags: 0,
+            shader: None,
+            start_solid: false,
+            all_solid: false,
         };
-        let (first, count) = (model.first_brush as usize, model.num_brushes as usize);
-        let Some(brushes) = self.brushes.get(first..first + count) else {
-            return Ok(false);
+        if model == 0 || contents_mask == 0 {
+            return Ok(result);
+        }
+        let Some(model) = self.models.get(model) else {
+            return Ok(result);
         };
 
-        let local = [-origin[0], -origin[1], -origin[2]];
-        for brush in brushes {
-            if brush.contents as u32 & contents_mask == 0 {
-                continue;
+        let start_local = pose.world_to_local(start);
+        let end_local = pose.world_to_local(end);
+        let local_sweep = (start_local, end_local, mins, maxs);
+        self.clip_model(model, local_sweep, contents_mask, &mut result);
+
+        if result.fraction < 1.0 {
+            if let (Some(plane), Some(axis)) = (result.plane.as_mut(), pose.axis) {
+                plane.normal = std::array::from_fn(|column| {
+                    axis[0][column] * plane.normal[0]
+                        + axis[1][column] * plane.normal[1]
+                        + axis[2][column] * plane.normal[2]
+                });
             }
-            let mut trace = Trace {
-                fraction: 1.0,
-                end_position: local,
-                plane: None,
-                contents: 0,
-                surface_flags: 0,
-                shader: None,
-                start_solid: false,
-                all_solid: false,
-            };
-            self.clip_brush(brush, local, local, mins, maxs, &mut trace);
-            if trace.start_solid {
-                return Ok(true);
+            result.end_position = lerp(start, end, result.fraction);
+        } else {
+            result.end_position = end;
+        }
+        Ok(result)
+    }
+
+    fn clip_model(
+        &self,
+        model: &super::Model,
+        sweep: ([f32; 3], [f32; 3], [f32; 3], [f32; 3]),
+        contents_mask: u32,
+        result: &mut Trace,
+    ) {
+        let (start, end, mins, maxs) = sweep;
+        let (first, count) = (model.first_brush as usize, model.num_brushes as usize);
+        if let Some(brushes) = self.brushes.get(first..first + count) {
+            for brush in brushes {
+                if brush.contents as u32 & contents_mask != 0 {
+                    self.clip_brush(brush, start, end, mins, maxs, result);
+                    if result.all_solid {
+                        return;
+                    }
+                }
             }
         }
-        Ok(false)
+        let (first, count) = (model.first_face as usize, model.num_faces as usize);
+        let Some(faces) = self.face_patch.get(first..first + count) else {
+            return;
+        };
+        for patch_index in faces.iter().flatten() {
+            let patch = &self.patches[*patch_index];
+            if patch.contents as u32 & contents_mask != 0 {
+                self.clip_patch(patch, sweep, result);
+                if result.all_solid {
+                    return;
+                }
+            }
+        }
     }
 
     fn clip_brush(
