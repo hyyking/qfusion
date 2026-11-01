@@ -211,6 +211,10 @@ impl ModeSimulation {
         &self.mode
     }
 
+    pub fn mode_mut(&mut self) -> &mut MovementMode {
+        &mut self.mode
+    }
+
     pub fn toggle_mode(&mut self) {
         self.mode.toggle();
     }
