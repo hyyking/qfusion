@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::entities::{BrushModels, MapEntities, TriggerEvent};
+use super::entities::{BrushModels, MapEntities, MoverWorld, PushedPlayer, TriggerEvent};
 use super::player::{NoclipPlayer, PlayerCommand, StepError, TICK_DURATION};
 use super::pmove::{
     BUTTON_SPECIAL, PmType, PmoveCommand, PmoveRules, PmoveState, PmoveTouch, PmoveWorld,
@@ -30,6 +30,11 @@ pub struct WalkPlayer {
     pub rules: PmoveRules,
     /// Movement events produced by ticks since the last [`ModeSimulation::take_events`].
     pub events: Vec<PredictedEvent>,
+    /// Entity stood on after the last command (0 is the world, other values
+    /// are brush movers by lump index).
+    pub ground_entity: Option<i32>,
+    /// Entities touched by the last command.
+    pub touched: Vec<i32>,
 }
 
 impl WalkPlayer {
@@ -40,6 +45,8 @@ impl WalkPlayer {
             view_angles: player.view_angles,
             rules: PmoveRules::default(),
             events: Vec::new(),
+            ground_entity: None,
+            touched: Vec::new(),
         };
         walk.state.stats.features = u32::MAX;
         walk
@@ -106,6 +113,8 @@ impl WalkPlayer {
             None => pmove(world, &self.rules, &mut self.state, &pm_command),
         };
         self.events.extend(result.events);
+        self.ground_entity = result.ground_entity;
+        self.touched = result.touch_entities;
         Ok(())
     }
 }
@@ -261,8 +270,21 @@ impl ModeSimulation {
             let time_ms = self.ticks * TICK_DURATION.as_millis() as i64;
             match (&mut self.entities, models) {
                 (Some(entities), Some(models)) if self.mode.is_walking() => {
+                    let solid = MoverWorld::new(world, models, entities.mover_poses());
                     let mut touch = entities.player_touch(models, time_ms);
-                    self.mode.step(world, command, Some(&mut touch))?;
+                    self.mode.step(&solid, command, Some(&mut touch))?;
+                    if let MovementMode::Walk(player) = &mut self.mode {
+                        entities.player_touched(&player.touched, time_ms);
+                        entities.step_movers(
+                            models,
+                            world,
+                            time_ms,
+                            Some(PushedPlayer {
+                                state: &mut player.state,
+                                ground_entity: player.ground_entity,
+                            }),
+                        );
+                    }
                     let events = entities.drain_events();
                     if let MovementMode::Walk(player) = &mut self.mode
                         && events
@@ -278,6 +300,9 @@ impl ModeSimulation {
                     self.mode.step(world, command, None)?;
                     if let Some(entities) = &mut self.entities {
                         entities.think(time_ms);
+                        if let Some(models) = models {
+                            entities.step_movers(models, world, time_ms, None);
+                        }
                         self.trigger_events.extend(entities.drain_events());
                     }
                 }

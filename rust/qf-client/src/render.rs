@@ -7,6 +7,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use qf_engine::content::bsp::WorldMesh;
+use qf_engine::simulation::entities::MoverPose;
 
 use crate::hud::Canvas;
 use crate::math;
@@ -176,10 +177,19 @@ pub struct Renderer {
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
+    submodels: Vec<(usize, WorldMesh)>,
+    mover_vertex_buf: wgpu::Buffer,
+    mover_index_buf: wgpu::Buffer,
+    mover_vertices: Vec<Vertex>,
+    mover_indices: Vec<u32>,
 }
 
 impl Renderer {
-    pub fn new(window: Arc<Window>, mesh: &WorldMesh) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        window: Arc<Window>,
+        mesh: &WorldMesh,
+        submodels: Vec<(usize, WorldMesh)>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         if mesh.positions.is_empty() || mesh.indices.is_empty() {
             return Err("parsed BSP world mesh contains no renderable triangles".into());
         }
@@ -294,6 +304,20 @@ impl Renderer {
         });
         let depth_view = create_depth_view(&device, &config);
         let hud = HudPass::new(&device, config.format);
+        let vertex_capacity: usize = submodels.iter().map(|(_, m)| m.positions.len()).sum();
+        let index_capacity: usize = submodels.iter().map(|(_, m)| m.indices.len()).sum();
+        let mover_vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("BSP mover vertices"),
+            size: (vertex_capacity.max(1) * std::mem::size_of::<Vertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mover_index_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("BSP mover indices"),
+            size: (index_capacity.max(1) * 4) as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         Ok(Self {
             hud,
@@ -308,7 +332,47 @@ impl Renderer {
             uniform_buf,
             bind_group,
             depth_view,
+            submodels,
+            mover_vertex_buf,
+            mover_index_buf,
+            mover_vertices: Vec::new(),
+            mover_indices: Vec::new(),
         })
+    }
+
+    /// Re-poses every mover's inline model on the CPU; the meshes are tiny next to the world.
+    fn upload_movers(&mut self, movers: &[MoverPose]) {
+        self.mover_vertices.clear();
+        self.mover_indices.clear();
+        for pose in movers {
+            let Some((_, mesh)) = self.submodels.iter().find(|(m, _)| *m == pose.model) else {
+                continue;
+            };
+            let base = self.mover_vertices.len() as u32;
+            for (&position, &normal) in mesh.positions.iter().zip(&mesh.normals) {
+                let rotated = pose.local_to_world([normal[0], normal[1], normal[2]]);
+                let normal = std::array::from_fn(|i| rotated[i] - pose.origin[i]);
+                self.mover_vertices.push(Vertex {
+                    position: pose.local_to_world(position),
+                    normal,
+                });
+            }
+            self.mover_indices
+                .extend(mesh.indices.iter().map(|&i| base + i));
+        }
+        if self.mover_indices.is_empty() {
+            return;
+        }
+        self.queue.write_buffer(
+            &self.mover_vertex_buf,
+            0,
+            bytemuck::cast_slice(&self.mover_vertices),
+        );
+        self.queue.write_buffer(
+            &self.mover_index_buf,
+            0,
+            bytemuck::cast_slice(&self.mover_indices),
+        );
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -325,7 +389,13 @@ impl Renderer {
         [self.config.width as f32, self.config.height as f32]
     }
 
-    pub fn render(&mut self, eye: [f32; 3], view_angles: [f32; 3], hud: &Canvas) {
+    pub fn render(
+        &mut self,
+        eye: [f32; 3],
+        view_angles: [f32; 3],
+        movers: &[MoverPose],
+        hud: &Canvas,
+    ) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -355,6 +425,7 @@ impl Renderer {
         let mvp = math::mul(&proj, &view);
         self.queue
             .write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&Uniforms { mvp }));
+        self.upload_movers(movers);
 
         let color_view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -392,6 +463,11 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
             pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
+            if !self.mover_indices.is_empty() {
+                pass.set_vertex_buffer(0, self.mover_vertex_buf.slice(..));
+                pass.set_index_buffer(self.mover_index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.mover_indices.len() as u32, 0, 0..1);
+            }
         }
         let size = self.size();
         let hud_vertices = self.hud.prepare(&self.device, &self.queue, hud, size);
