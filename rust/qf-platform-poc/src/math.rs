@@ -1,13 +1,6 @@
-//! Minimal column-major 4x4 matrix helpers (just enough for the demo cube).
+//! Minimal column-major 4x4 matrix helpers for the BSP preview.
 
 pub type Mat4 = [[f32; 4]; 4];
-
-pub const IDENTITY: Mat4 = [
-    [1.0, 0.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-];
 
 /// `a * b` (apply `b` first, then `a`).
 pub fn mul(a: &Mat4, b: &Mat4) -> Mat4 {
@@ -20,30 +13,16 @@ pub fn mul(a: &Mat4, b: &Mat4) -> Mat4 {
     out
 }
 
-pub fn rotation_y(angle: f32) -> Mat4 {
-    let (s, c) = angle.sin_cos();
-    let mut m = IDENTITY;
-    m[0][0] = c;
-    m[0][2] = -s;
-    m[2][0] = s;
-    m[2][2] = c;
-    m
-}
-
-pub fn rotation_x(angle: f32) -> Mat4 {
-    let (s, c) = angle.sin_cos();
-    let mut m = IDENTITY;
-    m[1][1] = c;
-    m[1][2] = s;
-    m[2][1] = -s;
-    m[2][2] = c;
-    m
-}
-
-pub fn translation(x: f32, y: f32, z: f32) -> Mat4 {
-    let mut m = IDENTITY;
-    m[3] = [x, y, z, 1.0];
-    m
+pub fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> Mat4 {
+    let forward = normalize(sub(target, eye));
+    let right = normalize(cross(forward, up));
+    let up = cross(right, forward);
+    [
+        [right[0], up[0], -forward[0], 0.0],
+        [right[1], up[1], -forward[1], 0.0],
+        [right[2], up[2], -forward[2], 0.0],
+        [-dot(right, eye), -dot(up, eye), dot(forward, eye), 1.0],
+    ]
 }
 
 /// Right-handed perspective with wgpu clip-space depth range 0..1.
@@ -56,6 +35,27 @@ pub fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
     m[2][3] = -1.0;
     m[3][2] = near * far / (near - far);
     m
+}
+
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let length = dot(v, v).sqrt();
+    [v[0] / length, v[1] / length, v[2] / length]
 }
 
 #[cfg(test)]
@@ -76,26 +76,13 @@ mod tests {
     }
 
     #[test]
-    fn identity_is_neutral() {
-        let m = rotation_y(0.7);
-        assert_eq!(mul(&IDENTITY, &m), m);
-        assert_eq!(mul(&m, &IDENTITY), m);
-    }
-
-    #[test]
-    fn rotation_y_quarter_turn_maps_x_to_minus_z() {
-        let p = transform_point(&rotation_y(std::f32::consts::FRAC_PI_2), [1.0, 0.0, 0.0]);
-        assert!(close(p[0], 0.0) && close(p[2], -1.0), "{p:?}");
-    }
-
-    #[test]
-    fn mul_applies_right_operand_first() {
-        let m = mul(
-            &translation(0.0, 0.0, -5.0),
-            &rotation_y(std::f32::consts::FRAC_PI_2),
+    fn look_at_places_target_on_negative_view_z() {
+        let m = look_at([0.0, 0.0, 5.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let p = transform_point(&m, [0.0, 0.0, 0.0]);
+        assert!(
+            close(p[0], 0.0) && close(p[1], 0.0) && close(p[2], -5.0),
+            "{p:?}"
         );
-        let p = transform_point(&m, [1.0, 0.0, 0.0]);
-        assert!(close(p[0], 0.0) && close(p[2], -6.0), "{p:?}");
     }
 
     #[test]

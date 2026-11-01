@@ -6,6 +6,7 @@ edition = "2024"
 [workspace]
 
 [dependencies]
+bsp-poc = { path = "../../tools/bsp-poc" }
 bytemuck = { version = "1.25.2", features = ["derive"] }
 cpal = "0.18.2"
 pollster = "1.0.1"
