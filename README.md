@@ -3,6 +3,28 @@
 This is <a href="https://www.warsow.net/">Warsow</a>'s fork
 of <a href="http://qfusion.github.io/qfusion/">qfusion</a>, the id Tech 2 derived game engine
 
+## Engine port
+
+For the proposed full engine port, its compatibility questions, architecture, and phased implementation plan, see [ENGINE_PORT.md](ENGINE_PORT.md).
+
+### Rust crate shortlist
+
+These are candidate building blocks for the port, not a finalized dependency manifest. The ecosystem catalog [Are We Game Yet?](https://arewegameyet.rs) is a useful discovery resource, not a quality certification.
+
+| Area | Candidate crates | Notes |
+|---|---|---|
+| Graphics and windowing | [`wgpu`](https://crates.io/crates/wgpu), [`winit`](https://crates.io/crates/winit) | Direct `wgpu` rendering with `winit` window and input events, as described in `ENGINE_PORT.md`. |
+| ECS and math | [`bevy_ecs`](https://crates.io/crates/bevy_ecs), [`glam`](https://crates.io/crates/glam) | Use the ECS without adopting the full Bevy engine; keep it behind engine-owned interfaces. |
+| Collision | [`parry3d`](https://crates.io/crates/parry3d) candidate; [`rapier3d`](https://crates.io/crates/rapier3d) if rigid-body simulation is needed | Parry offers collision queries without requiring a rigid-body simulation. Rapier includes Parry and adds rigid bodies, joints, and world simulation. Neither guarantees qfusion-compatible BSP traces or Warsow movement; validate candidates against reference traces. |
+| Audio | [`cpal`](https://crates.io/crates/cpal); evaluate [`kira`](https://crates.io/crates/kira) | CPAL provides low-level audio I/O. Compare Kira's game-audio features before committing to a custom mixer. |
+| Scripting | [`rhai`](https://crates.io/crates/rhai) | Embedded scripting direction; initially for built-in maps and modes. |
+| Content import | [`binrw`](https://crates.io/crates/binrw), [`image`](https://crates.io/crates/image) | Binary parsing and image decoding for import tools; validate offsets, lengths, and malformed inputs. |
+| Configuration and paths | [`serde`](https://crates.io/crates/serde), [`toml`](https://crates.io/crates/toml), [`directories`](https://crates.io/crates/directories) | Configuration serialization and platform-specific user-data paths. |
+| Diagnostics and testing | [`tracing`](https://crates.io/crates/tracing), [`proptest`](https://crates.io/crates/proptest), [`criterion`](https://crates.io/crates/criterion) | Structured diagnostics, property-based tests, and benchmarks. |
+| Multiplayer transport | Evaluate [`renet`](https://crates.io/crates/renet) | Compare with the custom UDP protocol requirements and test under the planned latency/loss envelope before adopting. |
+
+Treat deterministic movement as an explicit cross-platform test requirement; a fixed 125 Hz tick or a particular math/collision crate does not guarantee determinism by itself. See `ENGINE_PORT.md` for the port scope, performance targets, and validation strategy.
+
 ## License (GPLv2)
 
 This program is free software; you can redistribute it and/or
