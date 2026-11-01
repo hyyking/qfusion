@@ -164,11 +164,12 @@ Instrument CPU time for visibility, batching, and command encoding separately fr
 
 - Confirm target platform requirements and runtime constraints.
 - Decide which existing maps, assets, scripts, and demos must remain compatible.
+- Record per-area decisions, content-root precedence, dependencies, and reference scenarios in [PORT_COMPATIBILITY.md](PORT_COMPATIBILITY.md).
 - Inventory gameplay rules and map/entity behavior from the current engine.
 - Capture representative scenarios and expected outcomes: connect, load a map, spawn, move, use each weapon, pick up items, score, transition match state, and change maps.
 - Establish baseline build and test commands for the current engine where feasible.
 
-**Exit condition:** compatibility decisions are written down, and the reference scenarios can be repeated or compared.
+**Exit condition:** compatibility decisions are written down, the content roots and precedence are verified, and the reference scenarios can be repeated or compared.
 
 ### 2. Prove the offline vertical slice
 
