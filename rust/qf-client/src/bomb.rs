@@ -34,11 +34,13 @@ impl BombSession {
     }
 
     /// Runs `ticks` 125 Hz gametype ticks, teleporting the walking player on spawn events.
+    /// Returns whether a spawn rewrote the player's look direction.
     pub fn advance(
         &mut self,
         ticks: usize,
         simulation: &mut ModeSimulation,
-    ) -> Result<(), GameError> {
+    ) -> Result<bool, GameError> {
+        let mut respawned = false;
         for _ in 0..ticks {
             if let MovementMode::Walk(walk) = simulation.mode() {
                 let [pitch, yaw, _] = walk.view_angles;
@@ -61,6 +63,7 @@ impl BombSession {
                             walk.state.velocity = [0.0; 3];
                             let yaw = event.float("yaw").unwrap_or(0.0) as f32;
                             walk.view_angles = [0.0, yaw, 0.0];
+                            respawned = true;
                         }
                     }
                     "round_won" | "match_won" | "bomb_planted" | "bomb_defused"
@@ -70,7 +73,7 @@ impl BombSession {
             }
         }
         self.hud = BombHud::from_values(&self.host.hud(self.player)?);
-        Ok(())
+        Ok(respawned)
     }
 
     /// Applies the gametype's movement lock (round countdown, death) to the pmove stats.

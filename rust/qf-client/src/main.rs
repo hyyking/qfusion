@@ -16,7 +16,7 @@ use hud::HudElement;
 use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
 use qf_engine::game::Team;
 use qf_engine::simulation::bsp_world::BspWorld;
-use qf_engine::simulation::entities::MapEntities;
+use qf_engine::simulation::entities::{MapEntities, TriggerEvent};
 use qf_engine::simulation::player::NoclipPlayer;
 use qf_engine::simulation::walk::{ModeSimulation, WalkCommand};
 use winit::application::ApplicationHandler;
@@ -341,17 +341,27 @@ impl ApplicationHandler for App {
                         return;
                     }
                 };
-                if let Some(bomb) = &mut self.bomb
-                    && let Err(error) = bomb.advance(ticks, &mut self.simulation)
-                {
-                    eprintln!("{error}");
-                    event_loop.exit();
-                    return;
+                let mut respawned = false;
+                if let Some(bomb) = &mut self.bomb {
+                    match bomb.advance(ticks, &mut self.simulation) {
+                        Ok(spawned) => respawned = spawned,
+                        Err(error) => {
+                            eprintln!("{error}");
+                            event_loop.exit();
+                            return;
+                        }
+                    }
                 }
-                // Teleporters rewrite the look direction.
-                self.view_angles = self.simulation.mode().view().1;
-                let (eye, _) = self.simulation.mode().view();
                 let trigger_events = self.simulation.drain_trigger_events();
+                let teleported = trigger_events
+                    .iter()
+                    .any(|event| matches!(event, TriggerEvent::Teleport { .. }));
+                self.view_angles = view_after_frame(
+                    self.view_angles,
+                    self.simulation.mode().view().1,
+                    teleported || respawned,
+                );
+                let (eye, _) = self.simulation.mode().view();
                 for event in &trigger_events {
                     println!("trigger: {event:?}");
                 }
@@ -397,6 +407,14 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+}
+
+/// The simulation only stores view angles when a 125 Hz tick runs, so adopting them on every
+/// frame would discard the frame's mouse/arrow delta whenever no tick ran. Only teleporters
+/// and gametype spawns, which rewrite the look direction inside the simulation, override the
+/// client-owned angles.
+fn view_after_frame(client: [f32; 3], simulation: [f32; 3], rewritten: bool) -> [f32; 3] {
+    if rewritten { simulation } else { client }
 }
 
 struct Options {
@@ -522,5 +540,30 @@ fn main() {
     )) {
         eprintln!("event loop error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_view_delta_survives_frames_without_ticks() {
+        let stale_simulation = [0.0, 10.0, 0.0];
+        let mut view = stale_simulation;
+        for _ in 0..100 {
+            // Each frame adds a small mouse delta; no tick ran, so the simulation is stale.
+            view[1] -= 0.5;
+            view = view_after_frame(view, stale_simulation, false);
+        }
+        assert_eq!(view[1], 10.0 - 50.0);
+    }
+
+    #[test]
+    fn teleport_or_spawn_overrides_client_view() {
+        assert_eq!(
+            view_after_frame([0.0, 1.0, 0.0], [0.0, 90.0, 0.0], true),
+            [0.0, 90.0, 0.0]
+        );
     }
 }
