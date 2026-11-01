@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use hud::HudElement;
 use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
 use qf_engine::simulation::bsp_world::BspWorld;
-use qf_engine::simulation::entities::MapEntities;
+use qf_engine::simulation::entities::{MapEntities, TriggerEvent};
 use qf_engine::simulation::player::NoclipPlayer;
 use qf_engine::simulation::walk::{ModeSimulation, WalkCommand};
 use winit::application::ApplicationHandler;
@@ -291,10 +291,13 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
-                // Teleporters rewrite the look direction.
-                self.view_angles = self.simulation.mode().view().1;
+                // Only teleporters rewrite the look direction; the simulation angles lag
+                // the mouse on frames without a tick, so they must not be copied every frame.
                 for event in self.simulation.drain_trigger_events() {
                     println!("trigger: {event:?}");
+                    if matches!(event, TriggerEvent::Teleport { .. }) {
+                        self.view_angles = self.simulation.mode().view().1;
+                    }
                 }
                 if let Some(r) = &mut self.renderer {
                     let (eye, _) = self.simulation.mode().view();
