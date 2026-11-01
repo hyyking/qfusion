@@ -193,13 +193,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bsp-poc"
-version = "0.1.0"
-dependencies = [
- "zip",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -397,9 +390,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.3"
+version = "1.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
+checksum = "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04"
 dependencies = [
  "cfg-if",
 ]
@@ -1509,23 +1502,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
-name = "qf-game-poc"
+name = "qf-client"
 version = "0.1.0"
 dependencies = [
- "bsp-poc",
-]
-
-[[package]]
-name = "qf-platform-poc"
-version = "0.1.0"
-dependencies = [
- "bsp-poc",
  "bytemuck",
  "cpal",
  "pollster",
- "qf-game-poc",
+ "qf-engine",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "qf-engine"
+version = "0.1.0"
+dependencies = [
+ "zip",
 ]
 
 [[package]]

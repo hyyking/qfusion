@@ -254,13 +254,13 @@ impl Bsp {
             (b"RBSP", _) => {
                 return Err(BspError::UnsupportedLayout(
                     "RBSP layout is not decoded".into(),
-                ))
+                ));
             }
             (b"FBSP" | b"IBSP", v) => {
                 return Err(BspError::UnsupportedVersion {
                     magic: magic_s,
                     version: v,
-                })
+                });
             }
             _ => return Err(BspError::BadMagic(magic)),
         };

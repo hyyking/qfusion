@@ -6,9 +6,9 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use bsp_poc::WorldMesh;
-use qf_game_poc::NoclipPlayer;
+use qf_engine::content::bsp::WorldMesh;
 
+use crate::hud::Canvas;
 use crate::math;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -26,7 +26,145 @@ struct Uniforms {
     mvp: [[f32; 4]; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct HudVertex {
+    position: [f32; 2],
+    color: [f32; 4],
+}
+
+/// 2D overlay drawn after the world: coloured rectangles in pixel coordinates.
+struct HudPass {
+    pipeline: wgpu::RenderPipeline,
+    uniform_buf: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    vertex_buf: wgpu::Buffer,
+    capacity: usize,
+    vertices: Vec<HudVertex>,
+}
+
+impl HudPass {
+    const INITIAL_CAPACITY: usize = 4096;
+
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("HUD"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("hud.wgsl").into()),
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("HUD screen"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("HUD"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("HUD"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<HudVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("HUD screen"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("HUD screen"),
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            }],
+        });
+        Self {
+            pipeline,
+            uniform_buf,
+            bind_group,
+            vertex_buf: Self::vertex_buffer(device, Self::INITIAL_CAPACITY),
+            capacity: Self::INITIAL_CAPACITY,
+            vertices: Vec::with_capacity(Self::INITIAL_CAPACITY),
+        }
+    }
+
+    fn vertex_buffer(device: &wgpu::Device, vertices: usize) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("HUD vertices"),
+            size: (vertices * std::mem::size_of::<HudVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Uploads the canvas; returns the vertex count to draw.
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        canvas: &Canvas,
+        size: [f32; 2],
+    ) -> u32 {
+        self.vertices.clear();
+        for r in &canvas.rects {
+            let (x0, y0, x1, y1) = (r.x, r.y, r.x + r.w, r.y + r.h);
+            for [x, y] in [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]] {
+                self.vertices.push(HudVertex {
+                    position: [x, y],
+                    color: r.color,
+                });
+            }
+        }
+        if self.vertices.len() > self.capacity {
+            self.capacity = self.vertices.len().next_power_of_two();
+            self.vertex_buf = Self::vertex_buffer(device, self.capacity);
+        }
+        queue.write_buffer(
+            &self.uniform_buf,
+            0,
+            bytemuck::cast_slice(&[size[0], size[1], 0.0, 0.0]),
+        );
+        queue.write_buffer(&self.vertex_buf, 0, bytemuck::cast_slice(&self.vertices));
+        self.vertices.len() as u32
+    }
+}
+
 pub struct Renderer {
+    hud: HudPass,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -155,8 +293,10 @@ impl Renderer {
             }],
         });
         let depth_view = create_depth_view(&device, &config);
+        let hud = HudPass::new(&device, config.format);
 
         Ok(Self {
+            hud,
             surface,
             device,
             queue,
@@ -181,7 +321,11 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, &self.config);
     }
 
-    pub fn render(&mut self, player: &NoclipPlayer) {
+    pub fn size(&self) -> [f32; 2] {
+        [self.config.width as f32, self.config.height as f32]
+    }
+
+    pub fn render(&mut self, eye: [f32; 3], view_angles: [f32; 3], hud: &Canvas) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -195,16 +339,11 @@ impl Renderer {
 
         let aspect = self.config.width as f32 / self.config.height as f32;
         let fov_y = std::f32::consts::FRAC_PI_2;
-        let [pitch, yaw, _] = player.view_angles.map(f32::to_radians);
+        let [pitch, yaw, _] = view_angles.map(f32::to_radians);
         let forward = [
             pitch.cos() * yaw.cos(),
             pitch.cos() * yaw.sin(),
             pitch.sin(),
-        ];
-        let eye = [
-            player.position[0],
-            player.position[1],
-            player.position[2] + 30.0,
         ];
         let target = [
             eye[0] + forward[0],
@@ -253,6 +392,30 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
             pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
+        }
+        let size = self.size();
+        let hud_vertices = self.hud.prepare(&self.device, &self.queue, hud, size);
+        if hud_vertices > 0 {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("HUD"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.hud.pipeline);
+            pass.set_bind_group(0, &self.hud.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.hud.vertex_buf.slice(..));
+            pass.draw(0..hud_vertices, 0..1);
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use bsp_poc::entities::Entity;
+use crate::content::bsp::entities::Entity;
 
 pub const TICK_RATE_HZ: u32 = 125;
 pub const TICK_DURATION: Duration = Duration::from_millis(8);
