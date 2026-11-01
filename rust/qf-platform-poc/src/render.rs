@@ -1,6 +1,4 @@
-//! wgpu renderer: draws one rotating colored cube into a window surface.
-//! Knows nothing about input or audio; the only inputs are a window handle,
-//! resize notifications, and elapsed time.
+//! wgpu renderer for the BSP reader's parsed world mesh.
 
 use std::sync::Arc;
 
@@ -8,10 +6,18 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::cube::{self, Vertex};
+use bsp_poc::WorldMesh;
+
 use crate::math;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -31,10 +37,31 @@ pub struct Renderer {
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
+    center: [f32; 3],
+    radius: f32,
 }
 
 impl Renderer {
-    pub fn new(window: Arc<Window>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(window: Arc<Window>, mesh: &WorldMesh) -> Result<Self, Box<dyn std::error::Error>> {
+        if mesh.positions.is_empty() || mesh.indices.is_empty() {
+            return Err("parsed BSP world mesh contains no renderable triangles".into());
+        }
+        if mesh.positions.len() != mesh.normals.len() || !mesh.indices.len().is_multiple_of(3) {
+            return Err("parsed BSP world mesh has inconsistent vertex or index data".into());
+        }
+        let index_count = u32::try_from(mesh.indices.len())?;
+        let (mins, maxs) = mesh.bounds().ok_or("parsed BSP world mesh has no bounds")?;
+        let center = [
+            (mins[0] + maxs[0]) * 0.5,
+            (mins[1] + maxs[1]) * 0.5,
+            (mins[2] + maxs[2]) * 0.5,
+        ];
+        let radius = (0..3)
+            .map(|axis| (maxs[axis] - mins[axis]).powi(2))
+            .sum::<f32>()
+            .sqrt()
+            * 0.5;
+
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window)?;
@@ -52,12 +79,12 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("cube"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("cube.wgsl").into()),
+            label: Some("BSP world"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("bsp.wgsl").into()),
         });
 
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("uniforms"),
+            label: Some("BSP view uniforms"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX,
@@ -70,13 +97,13 @@ impl Renderer {
             }],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("cube"),
+            label: Some("BSP world"),
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("cube"),
+            label: Some("BSP world"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -95,7 +122,7 @@ impl Renderer {
                 targets: &[Some(config.format.into())],
             }),
             primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: None,
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -110,25 +137,30 @@ impl Renderer {
             cache: None,
         });
 
+        let vertices: Vec<_> = mesh
+            .positions
+            .iter()
+            .zip(&mesh.normals)
+            .map(|(&position, &normal)| Vertex { position, normal })
+            .collect();
         let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertices"),
-            contents: bytemuck::cast_slice(&cube::vertices()),
+            label: Some("BSP world vertices"),
+            contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let indices = cube::indices();
         let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("indices"),
-            contents: bytemuck::cast_slice(&indices),
+            label: Some("BSP world indices"),
+            contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("uniforms"),
+            label: Some("BSP view uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("uniforms"),
+            label: Some("BSP view uniforms"),
             layout: &bgl,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -145,10 +177,12 @@ impl Renderer {
             pipeline,
             vertex_buf,
             index_buf,
-            index_count: indices.len() as u32,
+            index_count,
             uniform_buf,
             bind_group,
             depth_view,
+            center,
+            radius,
         })
     }
 
@@ -162,7 +196,7 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, &self.config);
     }
 
-    pub fn render(&mut self, elapsed_secs: f32) {
+    pub fn render(&mut self) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -175,13 +209,23 @@ impl Renderer {
         };
 
         let aspect = self.config.width as f32 / self.config.height as f32;
-        let model = math::mul(
-            &math::rotation_y(elapsed_secs),
-            &math::rotation_x(elapsed_secs * 0.6),
+        let radius = self.radius.max(1.0);
+        let fov_y = std::f32::consts::FRAC_PI_3;
+        let distance = radius / (fov_y * 0.5).sin() * 1.15;
+        let direction = normalize([1.0, -1.0, 0.7]);
+        let eye = [
+            self.center[0] + direction[0] * distance,
+            self.center[1] + direction[1] * distance,
+            self.center[2] + direction[2] * distance,
+        ];
+        let view = math::look_at(eye, self.center, [0.0, 0.0, 1.0]);
+        let proj = math::perspective(
+            fov_y,
+            aspect,
+            (radius * 0.001).max(0.01),
+            distance + radius * 2.0,
         );
-        let view = math::translation(0.0, 0.0, -5.0);
-        let proj = math::perspective(std::f32::consts::FRAC_PI_4, aspect, 0.1, 100.0);
-        let mvp = math::mul(&proj, &math::mul(&view, &model));
+        let mvp = math::mul(&proj, &view);
         self.queue
             .write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&Uniforms { mvp }));
 
@@ -189,7 +233,7 @@ impl Renderer {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("cube"),
+                label: Some("BSP world"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &color_view,
                     depth_slice: None,
@@ -219,12 +263,21 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
-            pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
+            pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
     }
+}
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let length = v
+        .iter()
+        .map(|component| component * component)
+        .sum::<f32>()
+        .sqrt();
+    [v[0] / length, v[1] / length, v[2] / length]
 }
 
 fn create_depth_view(

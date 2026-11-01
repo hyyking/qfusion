@@ -1,30 +1,32 @@
 //! Window/input lifecycle (winit). Wires input events to renderer and audio.
-//! Space plays a beep, Escape or window close exits.
+//! Renders a parsed BSP world mesh. Space plays a beep, Escape or window close exits.
 
 mod audio;
-mod cube;
 mod math;
 mod render;
 mod tone;
 
+use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
 
+use bsp_poc::{Bsp, WorldMesh, read_pk3_entry};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+const USAGE: &str = "usage: qf-platform-poc <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp]";
+
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<render::Renderer>,
     audio: Option<audio::AudioOut>,
-    start: Instant,
+    world_mesh: Option<WorldMesh>,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(world_mesh: WorldMesh) -> Self {
         let audio = match audio::AudioOut::new() {
             Ok(a) => Some(a),
             Err(e) => {
@@ -36,7 +38,7 @@ impl App {
             window: None,
             renderer: None,
             audio,
-            start: Instant::now(),
+            world_mesh: Some(world_mesh),
         }
     }
 
@@ -58,8 +60,8 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
-            .with_title("qfusion platform POC - Space: beep, Esc: quit");
+        let attrs =
+            Window::default_attributes().with_title("qfusion BSP preview - Space: beep, Esc: quit");
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -68,7 +70,12 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match render::Renderer::new(window.clone()) {
+        let Some(world_mesh) = self.world_mesh.take() else {
+            eprintln!("failed to initialize renderer: parsed BSP mesh is unavailable");
+            event_loop.exit();
+            return;
+        };
+        match render::Renderer::new(window.clone(), &world_mesh) {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
                 eprintln!("failed to initialize renderer: {e}");
@@ -99,7 +106,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(r) = &mut self.renderer {
-                    r.render(self.start.elapsed().as_secs_f32());
+                    r.render();
                 }
                 if let Some(w) = &self.window {
                     w.request_redraw();
@@ -110,7 +117,58 @@ impl ApplicationHandler for App {
     }
 }
 
+fn load_world_mesh() -> Result<Option<WorldMesh>, String> {
+    let mut args = std::env::args().skip(1);
+    let Some(input) = args.next() else {
+        return Err("missing map input".into());
+    };
+    if input == "--help" || input == "-h" {
+        println!("{USAGE}");
+        return Ok(None);
+    }
+
+    let mut entry = String::from("maps/wbomb1.bsp");
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--entry" => entry = args.next().ok_or("--entry requires a value")?,
+            _ => return Err(format!("unknown argument {arg}")),
+        }
+    }
+
+    let path = Path::new(&input);
+    let data = if input.to_lowercase().ends_with(".pk3") {
+        read_pk3_entry(path, &entry)?
+    } else {
+        std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?
+    };
+    let bsp = Bsp::parse(&data).map_err(|e| e.to_string())?;
+    let mesh = bsp.model_mesh(0).map_err(|e| e.to_string())?;
+
+    println!(
+        "loaded {input}: {} vertices, {} triangles, {} faces skipped",
+        mesh.positions.len(),
+        mesh.indices.len() / 3,
+        mesh.skipped_faces
+    );
+    if let Some((mins, maxs)) = mesh.bounds() {
+        println!("world bounds: {mins:?} .. {maxs:?}");
+    }
+    for diagnostic in &bsp.diagnostics {
+        eprintln!("BSP: {diagnostic}");
+    }
+    Ok(Some(mesh))
+}
+
 fn main() {
+    let world_mesh = match load_world_mesh() {
+        Ok(Some(mesh)) => mesh,
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("error: {e}\n{USAGE}");
+            std::process::exit(1);
+        }
+    };
+
     let event_loop = match EventLoop::new() {
         Ok(l) => l,
         Err(e) => {
@@ -119,7 +177,7 @@ fn main() {
         }
     };
     event_loop.set_control_flow(ControlFlow::Poll);
-    if let Err(e) = event_loop.run_app(&mut App::new()) {
+    if let Err(e) = event_loop.run_app(&mut App::new(world_mesh)) {
         eprintln!("event loop error: {e}");
         std::process::exit(1);
     }
