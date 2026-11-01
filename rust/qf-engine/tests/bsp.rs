@@ -1,4 +1,6 @@
-use bsp_poc::{entities::parse_entities, read_pk3_entry, Bsp, BspError, Format, TraceError};
+use qf_engine::content::bsp::{
+    Bsp, BspError, Format, TraceError, entities::parse_entities, read_pk3_entry,
+};
 
 fn le(v: i32) -> [u8; 4] {
     v.to_le_bytes()
@@ -395,9 +397,10 @@ fn real_wbomb1_smoke() {
     assert!(bsp.entities.contains("worldspawn"));
     let mesh = bsp.model_mesh(0).unwrap();
     assert!(mesh.indices.len() >= 3 && mesh.indices.chunks_exact(3).remainder().is_empty());
-    assert!(mesh
-        .indices
-        .iter()
-        .all(|&i| (i as usize) < mesh.positions.len()));
+    assert!(
+        mesh.indices
+            .iter()
+            .all(|&i| (i as usize) < mesh.positions.len())
+    );
     assert!(mesh.positions.iter().flatten().all(|c| c.is_finite()));
 }

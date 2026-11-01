@@ -6,6 +6,7 @@ source/*/Release
 source/ipch
 source/client/qfusion_autogen/
 source/client/warsow_autogen/
+/target/
 *.sdf
 *.opensdf
 *.vcxproj.user

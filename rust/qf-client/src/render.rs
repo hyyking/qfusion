@@ -6,8 +6,8 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use bsp_poc::WorldMesh;
-use qf_game_poc::NoclipPlayer;
+use qf_engine::content::bsp::WorldMesh;
+use qf_engine::simulation::player::NoclipPlayer;
 
 use crate::math;
 

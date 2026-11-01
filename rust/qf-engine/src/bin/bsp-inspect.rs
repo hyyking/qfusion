@@ -1,7 +1,8 @@
-use bsp_poc::{read_pk3_entry, Bsp};
+use qf_engine::content::bsp::{Bsp, read_pk3_entry};
 use std::path::Path;
 
-const USAGE: &str = "usage: bsp-poc <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--obj out.obj]";
+const USAGE: &str =
+    "usage: bsp-inspect <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--obj out.obj]";
 
 fn main() {
     if let Err(e) = run() {
@@ -38,7 +39,7 @@ fn run() -> Result<(), String> {
     for (i, l) in bsp.lumps.iter().enumerate() {
         println!(
             "  {i:2} {:<12} offset={:<9} len={}",
-            bsp_poc::LUMP_NAMES[i],
+            qf_engine::content::bsp::LUMP_NAMES[i],
             l.offset,
             l.len
         );
