@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use hud::HudElement;
 use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
 use qf_engine::simulation::bsp_world::BspWorld;
-use qf_engine::simulation::entities::MapEntities;
+use qf_engine::simulation::entities::{MapEntities, TriggerEvent};
 use qf_engine::simulation::player::NoclipPlayer;
 use qf_engine::simulation::recording::{MapIdentity, Recorder};
 use qf_engine::simulation::walk::{ModeSimulation, MovementMode, WalkCommand};
@@ -379,9 +379,16 @@ impl ApplicationHandler for App {
                     return;
                 }
                 self.collect_recorded_ticks();
-                // Teleporters rewrite the look direction.
-                self.view_angles = self.simulation.mode().view().1;
-                for event in self.simulation.drain_trigger_events() {
+                let trigger_events = self.simulation.drain_trigger_events();
+                let teleported = trigger_events
+                    .iter()
+                    .any(|event| matches!(event, TriggerEvent::Teleport { .. }));
+                self.view_angles = view_after_frame(
+                    self.view_angles,
+                    self.simulation.mode().view().1,
+                    teleported,
+                );
+                for event in trigger_events {
                     println!("trigger: {event:?}");
                 }
                 if let Some(r) = &mut self.renderer {
@@ -420,6 +427,13 @@ impl ApplicationHandler for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.stop_recording();
     }
+}
+
+/// The simulation only stores view angles when a 125 Hz tick runs, so adopting them on every
+/// frame would discard the frame's mouse/arrow delta whenever no tick ran. Only teleporters,
+/// which rewrite the look direction inside the simulation, override the client-owned angles.
+fn view_after_frame(client: [f32; 3], simulation: [f32; 3], teleported: bool) -> [f32; 3] {
+    if teleported { simulation } else { client }
 }
 
 fn default_recording_path() -> PathBuf {
@@ -539,5 +553,30 @@ fn main() {
     )) {
         eprintln!("event loop error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_view_delta_survives_frames_without_ticks() {
+        let stale_simulation = [0.0, 10.0, 0.0];
+        let mut view = stale_simulation;
+        for _ in 0..100 {
+            // Each frame adds a small mouse delta; no tick ran, so the simulation is stale.
+            view[1] -= 0.5;
+            view = view_after_frame(view, stale_simulation, false);
+        }
+        assert_eq!(view[1], 10.0 - 50.0);
+    }
+
+    #[test]
+    fn teleport_overrides_client_view() {
+        assert_eq!(
+            view_after_frame([0.0, 1.0, 0.0], [0.0, 90.0, 0.0], true),
+            [0.0, 90.0, 0.0]
+        );
     }
 }
