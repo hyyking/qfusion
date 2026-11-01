@@ -7,4 +7,5 @@ description = "GPU- and window-independent qfusion engine components"
 [dependencies]
 bevy_ecs = { version = "0.20.1", default-features = false, features = ["std"] }
 rhai = { version = "1.27.0", features = ["sync"] }
+image = { version = "0.25", default-features = false, features = ["tga", "jpeg", "png"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
