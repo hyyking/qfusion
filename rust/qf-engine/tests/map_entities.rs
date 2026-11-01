@@ -194,6 +194,57 @@ fn all_official_maps_spawn_without_warnings() {
 }
 
 #[test]
+fn real_wbomb1_pads_launch_a_walking_player() {
+    use qf_engine::simulation::bsp_world::BspWorld;
+    let base = std::env::var("WARSOW_BASEWSW")
+        .unwrap_or_else(|_| r"C:\Program Files (x86)\Warsow 2.1\basewsw".into());
+    let pk3 = std::path::Path::new(&base).join("map_wbomb1.pk3");
+    let Ok(data) = read_pk3_entry(&pk3, "maps/wbomb1.bsp") else {
+        eprintln!("skipping: {} unavailable", pk3.display());
+        return;
+    };
+    let bsp = Bsp::parse(&data).unwrap();
+    let world = BspWorld::new(&bsp);
+    let mut checked = 0;
+    for entity in &bsp.parsed_entities {
+        let get = |key: &str| {
+            entity
+                .properties
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        if get("classname") != Some("trigger_push") {
+            continue;
+        }
+        let index: usize = get("model").unwrap()[1..].parse().unwrap();
+        let (lo, hi) = bsp.model_bounds(index).unwrap();
+        let start = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, hi[2] + 24.0];
+        let map = MapEntities::spawn(&bsp.parsed_entities, &bsp);
+        let mut sim = walking_sim(start, map);
+        let mut events = Vec::new();
+        for _ in 0..250 {
+            sim.advance_frame_with_entities(
+                &world,
+                &bsp,
+                Duration::from_millis(8),
+                WalkCommand::default(),
+            )
+            .unwrap();
+            events.extend(sim.drain_trigger_events());
+        }
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TriggerEvent::JumpPad { .. })),
+            "pad {lo:?}..{hi:?} never fired: {events:?}"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 2);
+}
+
+#[test]
 fn real_wbomb1_entities_spawn() {
     let base = std::env::var("WARSOW_BASEWSW")
         .unwrap_or_else(|_| r"C:\Program Files (x86)\Warsow 2.1\basewsw".into());
