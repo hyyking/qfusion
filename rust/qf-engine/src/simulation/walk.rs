@@ -50,7 +50,7 @@ impl WalkPlayer {
 
     pub fn eye_position(&self) -> [f32; 3] {
         let mut eye = self.state.origin;
-        eye[2] += self.state.view_height as f32;
+        eye[2] += self.state.view_height;
         eye
     }
 

@@ -76,6 +76,7 @@ add_executable(pmove_trace
     tools/pmove_trace.cpp
     facilities/gs_pmove.cpp
     facilities/gs_slidebox.cpp
+    helpers/exceptions.cpp
     helpers/q_math.cpp
     types/podvector.cpp)
 if (MSVC)
