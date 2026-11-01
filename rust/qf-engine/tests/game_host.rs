@@ -126,8 +126,7 @@ fn commands_damage_and_errors_go_through_the_script() {
 #[test]
 fn script_errors_surface_as_results() {
     let error = GameHost::new(SCRIPT, Arc::new(Floor), &[], &[], None, 1)
-        .err()
-        .expect("init throws without spawns");
+        .expect_err("init throws without spawns");
     assert!(error.to_string().contains("no spawns"), "{error}");
     let missing = GameHost::new("fn tick(g) {}", Arc::new(Floor), &[], &[], None, 1);
     assert!(missing.is_err(), "init is a required hook");
