@@ -32,6 +32,9 @@ The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.
   237 entities, 3,244 nodes, 3,253 leafs, 3,248 brushes, 25,066 brushsides;
   world mesh 55,639 triangles, all indices in range, finite positions.
 
+## Game host
+`game::GameHost` embeds Rhai and runs a gametype script at the fixed 125 Hz tick. The script owns the rules and discovers its map objects through `g.entities()`, `g.trace()` and friends; the engine only supplies players (`game::combat`, armor rule), world queries, a seeded RNG and an event queue. Hooks: required `init`, `tick`; optional `start_match`, `on_player_joined`, `on_team_change`, `on_command`, `on_damage`, `hud`. Tested in `tests/game_host.rs` with an inline script.
+
 ## Left out (reported as diagnostics)
 - Bezier patch faces are tessellated into the world mesh (`bsp::patch`, legacy `r_subdivisions` 5, LOD groups by face bounds).
 - Flare and foliage faces are skipped (none in wbomb1).
