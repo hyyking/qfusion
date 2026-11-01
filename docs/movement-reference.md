@@ -179,6 +179,14 @@ tests would instead direct investigation toward collision or its adapter.
 Neither suite covers patch/submodel collision or trigger touching, and
 `PM_UpdateDeltaAngles` remains game-side and unported.
 
+The captured fixture contains 16 scenarios at all six rates; every replay
+passes with zero exact-invariant mismatches. Maximum trajectory error is 0.0068
+position units and 0.0326 velocity units, both within the 0.05 tolerance. The
+remaining dash error is consistent with the legacy x64 build's SSE
+`rsqrtss` normalization estimate versus Rust's exact square root. The separate
+Rust BSP collision and movement tests also pass; no patch/submodel or trigger
+behavior is claimed by these results.
+
 No in-game session or reference BSP assets are available in this repository
 checkout, so live behavior has **not** been independently verified here. To
 complete that cross-check, run the same command sequence and map in a legacy
