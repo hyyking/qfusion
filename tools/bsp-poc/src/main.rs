@@ -30,21 +30,53 @@ fn run() -> Result<(), String> {
     };
     let bsp = Bsp::parse(&data).map_err(|e| e.to_string())?;
     println!("file bytes: {}", data.len());
-    println!("magic: {} version: {} format: {:?}", bsp.magic, bsp.version, bsp.format);
+    println!(
+        "magic: {} version: {} format: {:?}",
+        bsp.magic, bsp.version, bsp.format
+    );
     println!("lumps:");
     for (i, l) in bsp.lumps.iter().enumerate() {
-        println!("  {i:2} {:<12} offset={:<9} len={}", bsp_poc::LUMP_NAMES[i], l.offset, l.len);
+        println!(
+            "  {i:2} {:<12} offset={:<9} len={}",
+            bsp_poc::LUMP_NAMES[i],
+            l.offset,
+            l.len
+        );
     }
-    println!("shaders: {}  planes: {}  models: {}", bsp.shaders.len(), bsp.planes.len(), bsp.models.len());
-    println!("vertices: {}  elements: {}  faces: {}", bsp.vertices.len(), bsp.elements.len(), bsp.faces.len());
-    println!("entities text bytes: {}", bsp.entities.len());
+    println!(
+        "shaders: {}  planes: {}  models: {}",
+        bsp.shaders.len(),
+        bsp.planes.len(),
+        bsp.models.len()
+    );
+    println!(
+        "vertices: {}  elements: {}  faces: {}",
+        bsp.vertices.len(),
+        bsp.elements.len(),
+        bsp.faces.len()
+    );
+    println!(
+        "entities: {} parsed, {} text bytes",
+        bsp.parsed_entities.len(),
+        bsp.entities.len()
+    );
+    println!(
+        "collision: {} nodes, {} leafs, {} leaf-brush refs, {} brushes, {} brushsides",
+        bsp.nodes.len(),
+        bsp.leafs.len(),
+        bsp.leaf_brushes.len(),
+        bsp.brushes.len(),
+        bsp.brush_sides.len()
+    );
     if let Some(m) = bsp.models.first() {
         println!("world bounds (model 0): {:?} .. {:?}", m.mins, m.maxs);
     }
     let mesh = bsp.model_mesh(0).map_err(|e| e.to_string())?;
     println!(
         "world mesh: {} vertices, {} triangles, {} faces skipped (patch/flare/foliage)",
-        mesh.positions.len(), mesh.indices.len() / 3, mesh.skipped_faces
+        mesh.positions.len(),
+        mesh.indices.len() / 3,
+        mesh.skipped_faces
     );
     if let Some(b) = mesh.bounds() {
         println!("mesh bounds: {:?} .. {:?}", b.0, b.1);

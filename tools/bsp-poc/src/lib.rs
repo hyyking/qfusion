@@ -6,10 +6,29 @@
 
 use std::fmt;
 
+pub mod collision;
+pub mod entities;
+pub use collision::{Trace, TraceError, TracePlane};
+
 pub const LUMP_NAMES: [&str; 18] = [
-    "entities", "shaderrefs", "planes", "nodes", "leafs", "leaffaces", "leafbrushes", "models",
-    "brushes", "brushsides", "vertexes", "elements", "fogs", "faces", "lighting", "lightgrid",
-    "visibility", "lightarray",
+    "entities",
+    "shaderrefs",
+    "planes",
+    "nodes",
+    "leafs",
+    "leaffaces",
+    "leafbrushes",
+    "models",
+    "brushes",
+    "brushsides",
+    "vertexes",
+    "elements",
+    "fogs",
+    "faces",
+    "lighting",
+    "lightgrid",
+    "visibility",
+    "lightarray",
 ];
 const L_ENTITIES: usize = 0;
 const L_SHADERS: usize = 1;
@@ -32,13 +51,40 @@ pub const FACETYPE_FOLIAGE: i32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BspError {
-    Truncated { needed: usize, actual: usize },
+    Truncated {
+        needed: usize,
+        actual: usize,
+    },
     BadMagic([u8; 4]),
-    UnsupportedVersion { magic: String, version: i32 },
+    UnsupportedVersion {
+        magic: String,
+        version: i32,
+    },
     UnsupportedLayout(String),
-    LumpOutOfBounds { lump: &'static str, offset: i64, len: i64, file_len: usize },
-    BadLumpSize { lump: &'static str, len: usize, item_size: usize },
-    IndexOutOfRange { what: String, index: i64, limit: usize },
+    LumpOutOfBounds {
+        lump: &'static str,
+        offset: i64,
+        len: i64,
+        file_len: usize,
+    },
+    BadLumpSize {
+        lump: &'static str,
+        len: usize,
+        item_size: usize,
+    },
+    IndexOutOfRange {
+        what: String,
+        index: i64,
+        limit: usize,
+    },
+    InvalidEntities(String),
+    InvalidPlane {
+        index: usize,
+    },
+    MissingCollisionTree,
+    NodeCycle {
+        index: usize,
+    },
 }
 
 impl fmt::Display for BspError {
@@ -105,19 +151,61 @@ pub struct Plane {
 }
 
 #[derive(Debug, Clone)]
+pub struct Node {
+    pub plane: usize,
+    pub children: [i32; 2],
+    pub mins: [i32; 3],
+    pub maxs: [i32; 3],
+}
+
+#[derive(Debug, Clone)]
+pub struct Leaf {
+    pub cluster: i32,
+    pub area: i32,
+    pub mins: [i32; 3],
+    pub maxs: [i32; 3],
+    pub first_leaf_face: usize,
+    pub num_leaf_faces: usize,
+    pub first_leaf_brush: usize,
+    pub num_leaf_brushes: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrushSide {
+    pub plane: usize,
+    pub shader: usize,
+    pub surface: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Brush {
+    pub first_side: usize,
+    pub num_sides: usize,
+    pub shader: usize,
+    pub contents: i32,
+}
+
+#[derive(Debug, Clone)]
 pub struct Bsp {
     pub format: Format,
     pub magic: String,
     pub version: i32,
     pub lumps: Vec<Lump>,
     pub entities: String,
+    pub parsed_entities: Vec<entities::Entity>,
     pub shaders: Vec<ShaderRef>,
     pub planes: Vec<Plane>,
+    pub nodes: Vec<Node>,
+    pub leafs: Vec<Leaf>,
+    pub leaf_faces: Vec<usize>,
+    pub leaf_brushes: Vec<usize>,
+    pub brushes: Vec<Brush>,
+    pub brush_sides: Vec<BrushSide>,
     pub models: Vec<Model>,
     pub vertices: Vec<Vertex>,
     pub elements: Vec<u32>,
     pub faces: Vec<Face>,
-    /// Record counts of lumps that are size-checked but not otherwise decoded.
+    /// Record counts for decoded collision lumps and size-checked fogs.
     pub counts: Counts,
     pub diagnostics: Vec<String>,
 }
@@ -152,7 +240,10 @@ fn cstr(b: &[u8]) -> String {
 impl Bsp {
     pub fn parse(data: &[u8]) -> Result<Bsp, BspError> {
         if data.len() < 8 {
-            return Err(BspError::Truncated { needed: 8, actual: data.len() });
+            return Err(BspError::Truncated {
+                needed: 8,
+                actual: data.len(),
+            });
         }
         let magic: [u8; 4] = data[0..4].try_into().unwrap();
         let version = i32::from_le_bytes(data[4..8].try_into().unwrap());
@@ -160,29 +251,51 @@ impl Bsp {
         let (format, nlumps) = match (&magic, version) {
             (b"FBSP", 1) => (Format::Fbsp, 18),
             (b"IBSP", 46 | 47) => (Format::Ibsp, 17),
-            (b"RBSP", _) => return Err(BspError::UnsupportedLayout("RBSP layout is not decoded".into())),
+            (b"RBSP", _) => {
+                return Err(BspError::UnsupportedLayout(
+                    "RBSP layout is not decoded".into(),
+                ))
+            }
             (b"FBSP" | b"IBSP", v) => {
-                return Err(BspError::UnsupportedVersion { magic: magic_s, version: v })
+                return Err(BspError::UnsupportedVersion {
+                    magic: magic_s,
+                    version: v,
+                })
             }
             _ => return Err(BspError::BadMagic(magic)),
         };
         let header_len = 8 + nlumps * 8;
         if data.len() < header_len {
-            return Err(BspError::Truncated { needed: header_len, actual: data.len() });
+            return Err(BspError::Truncated {
+                needed: header_len,
+                actual: data.len(),
+            });
         }
         let h = Rd(data);
         let mut lumps = Vec::new();
-        for i in 0..nlumps {
+        for (i, &lump_name) in LUMP_NAMES.iter().take(nlumps).enumerate() {
             let (o, l) = (h.i32(8 + i * 8) as i64, h.i32(12 + i * 8) as i64);
             if o < 0 || l < 0 || o + l > data.len() as i64 {
-                return Err(BspError::LumpOutOfBounds { lump: LUMP_NAMES[i], offset: o, len: l, file_len: data.len() });
+                return Err(BspError::LumpOutOfBounds {
+                    lump: lump_name,
+                    offset: o,
+                    len: l,
+                    file_len: data.len(),
+                });
             }
-            lumps.push(Lump { offset: o as usize, len: l as usize });
+            lumps.push(Lump {
+                offset: o as usize,
+                len: l as usize,
+            });
         }
         let slice = |i: usize| &data[lumps[i].offset..lumps[i].offset + lumps[i].len];
         let sized = |i: usize, size: usize| -> Result<usize, BspError> {
             if lumps[i].len % size != 0 {
-                Err(BspError::BadLumpSize { lump: LUMP_NAMES[i], len: lumps[i].len, item_size: size })
+                Err(BspError::BadLumpSize {
+                    lump: LUMP_NAMES[i],
+                    len: lumps[i].len,
+                    item_size: size,
+                })
             } else {
                 Ok(lumps[i].len / size)
             }
@@ -194,9 +307,11 @@ impl Bsp {
         };
 
         let entities = cstr(slice(L_ENTITIES));
+        let parsed_entities = entities::parse_entities(&entities)
+            .map_err(|e| BspError::InvalidEntities(e.to_string()))?;
         let n = sized(L_SHADERS, 72)?;
         let r = Rd(slice(L_SHADERS));
-        let shaders = (0..n)
+        let shaders: Vec<ShaderRef> = (0..n)
             .map(|i| ShaderRef {
                 name: cstr(&r.0[i * 72..i * 72 + 64]),
                 surface_flags: r.i32(i * 72 + 64),
@@ -205,7 +320,79 @@ impl Bsp {
             .collect();
         let n = sized(L_PLANES, 16)?;
         let r = Rd(slice(L_PLANES));
-        let planes = (0..n).map(|i| Plane { normal: r.f3(i * 16), dist: r.f32(i * 16 + 12) }).collect();
+        let planes = (0..n)
+            .map(|i| Plane {
+                normal: r.f3(i * 16),
+                dist: r.f32(i * 16 + 12),
+            })
+            .collect();
+        let n = sized(L_NODES, 36)?;
+        let r = Rd(slice(L_NODES));
+        let nodes: Vec<Node> = (0..n)
+            .map(|i| {
+                let o = i * 36;
+                Node {
+                    plane: r.i32(o) as usize,
+                    children: [r.i32(o + 4), r.i32(o + 8)],
+                    mins: [r.i32(o + 12), r.i32(o + 16), r.i32(o + 20)],
+                    maxs: [r.i32(o + 24), r.i32(o + 28), r.i32(o + 32)],
+                }
+            })
+            .collect();
+        let n = sized(L_LEAFS, 48)?;
+        let r = Rd(slice(L_LEAFS));
+        let leafs: Vec<Leaf> = (0..n)
+            .map(|i| {
+                let o = i * 48;
+                Leaf {
+                    cluster: r.i32(o),
+                    area: r.i32(o + 4),
+                    mins: [r.i32(o + 8), r.i32(o + 12), r.i32(o + 16)],
+                    maxs: [r.i32(o + 20), r.i32(o + 24), r.i32(o + 28)],
+                    first_leaf_face: r.i32(o + 32) as usize,
+                    num_leaf_faces: r.i32(o + 36) as usize,
+                    first_leaf_brush: r.i32(o + 40) as usize,
+                    num_leaf_brushes: r.i32(o + 44) as usize,
+                }
+            })
+            .collect();
+        let n = sized(5, 4)?;
+        let r = Rd(slice(5));
+        let leaf_faces: Vec<usize> = (0..n).map(|i| r.i32(i * 4) as usize).collect();
+        let n = sized(6, 4)?;
+        let r = Rd(slice(6));
+        let leaf_brushes: Vec<usize> = (0..n).map(|i| r.i32(i * 4) as usize).collect();
+        let n = sized(L_BRUSHES, 12)?;
+        let r = Rd(slice(L_BRUSHES));
+        let brushes = (0..n)
+            .map(|i| {
+                let o = i * 12;
+                Brush {
+                    first_side: r.i32(o) as usize,
+                    num_sides: r.i32(o + 4) as usize,
+                    shader: r.i32(o + 8) as usize,
+                    contents: 0,
+                }
+            })
+            .collect::<Vec<_>>();
+        let n = sized(L_BRUSHSIDES, bssize)?;
+        let r = Rd(slice(L_BRUSHSIDES));
+        let brush_sides: Vec<BrushSide> = (0..n)
+            .map(|i| {
+                let o = i * bssize;
+                BrushSide {
+                    plane: r.i32(o) as usize,
+                    shader: r.i32(o + 4) as usize,
+                    surface: (bssize == 12).then(|| r.i32(o + 8)),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut brushes = brushes;
+        for brush in &mut brushes {
+            if let Some(shader) = shaders.get(brush.shader) {
+                brush.contents = shader.contents;
+            }
+        }
         let n = sized(L_MODELS, 40)?;
         let r = Rd(slice(L_MODELS));
         let models = (0..n)
@@ -226,7 +413,11 @@ impl Bsp {
         let vertices = (0..n)
             .map(|i| {
                 let o = i * vsize;
-                Vertex { pos: r.f3(o), uv: [r.f32(o + 12), r.f32(o + 16)], normal: r.f3(o + voff_n) }
+                Vertex {
+                    pos: r.f3(o),
+                    uv: [r.f32(o + 12), r.f32(o + 16)],
+                    normal: r.f3(o + voff_n),
+                }
             })
             .collect::<Vec<_>>();
         let n = sized(L_ELEMENTS, 4)?;
@@ -251,62 +442,108 @@ impl Bsp {
             })
             .collect();
         let counts = Counts {
-            nodes: sized(L_NODES, 36)?,
-            leafs: sized(L_LEAFS, 48)?,
-            brushes: sized(L_BRUSHES, 12)?,
-            brushsides: sized(L_BRUSHSIDES, bssize)?,
+            nodes: nodes.len(),
+            leafs: leafs.len(),
+            brushes: brushes.len(),
+            brushsides: brush_sides.len(),
             fogs: sized(L_FOGS, 72)?,
         };
 
         let mut bsp = Bsp {
-            format, magic: magic_s, version, lumps, entities, shaders, planes, models,
-            vertices, elements, faces, counts, diagnostics: Vec::new(),
+            format,
+            magic: magic_s,
+            version,
+            lumps,
+            entities,
+            parsed_entities,
+            shaders,
+            planes,
+            nodes,
+            leafs,
+            leaf_faces,
+            leaf_brushes,
+            brushes,
+            brush_sides,
+            models,
+            vertices,
+            elements,
+            faces,
+            counts,
+            diagnostics: Vec::new(),
         };
         bsp.validate()?;
-        for i in 14..nlumps {
+        for (i, &lump_name) in LUMP_NAMES.iter().take(nlumps).enumerate().skip(14) {
             if bsp.lumps[i].len > 0 {
                 bsp.diagnostics.push(format!(
                     "lump {} ({}) present ({} bytes): preserved as offset/len only, not decoded",
-                    i, LUMP_NAMES[i], bsp.lumps[i].len
+                    i, lump_name, bsp.lumps[i].len
                 ));
             }
         }
-        for (name, c) in [
-            ("nodes", bsp.counts.nodes), ("leafs", bsp.counts.leafs), ("brushes", bsp.counts.brushes),
-            ("brushsides", bsp.counts.brushsides), ("fogs", bsp.counts.fogs),
-        ] {
-            bsp.diagnostics.push(format!("lump {name}: {c} records size-checked, contents not decoded (collision/vis data)"));
+        if bsp.counts.fogs > 0 {
+            bsp.diagnostics.push(format!(
+                "{} fog records are size-checked but not decoded",
+                bsp.counts.fogs
+            ));
         }
-        bsp.diagnostics.push("leaffaces/leafbrushes lumps are not inspected".into());
         let mut by_type = [0usize; 6];
         for f in &bsp.faces {
             by_type[f.facetype.clamp(0, 5) as usize] += 1;
         }
         if by_type[FACETYPE_PATCH as usize] > 0 {
-            bsp.diagnostics.push(format!("{} patch faces (bezier) are not tessellated", by_type[2]));
+            bsp.diagnostics.push(format!(
+                "{} patch faces (bezier) are not tessellated",
+                by_type[2]
+            ));
         }
-        for (t, n) in [(FACETYPE_FLARE, "flare"), (FACETYPE_FOLIAGE, "foliage"), (0, "bad-type")] {
+        for (t, n) in [
+            (FACETYPE_FLARE, "flare"),
+            (FACETYPE_FOLIAGE, "foliage"),
+            (0, "bad-type"),
+        ] {
             if by_type[t as usize] > 0 {
-                bsp.diagnostics.push(format!("{} {n} faces are skipped", by_type[t as usize]));
+                bsp.diagnostics
+                    .push(format!("{} {n} faces are skipped", by_type[t as usize]));
             }
         }
         Ok(bsp)
     }
 
     fn validate(&self) -> Result<(), BspError> {
+        if self.nodes.is_empty()
+            && (!self.leafs.is_empty()
+                || !self.leaf_faces.is_empty()
+                || !self.leaf_brushes.is_empty()
+                || !self.brushes.is_empty()
+                || !self.brush_sides.is_empty())
+        {
+            return Err(BspError::MissingCollisionTree);
+        }
         for f in &self.faces {
             if f.shader < 0 || f.shader as usize >= self.shaders.len() {
                 return Err(BspError::IndexOutOfRange {
-                    what: "face.shader".into(), index: f.shader as i64, limit: self.shaders.len(),
+                    what: "face.shader".into(),
+                    index: f.shader as i64,
+                    limit: self.shaders.len(),
                 });
             }
-            if matches!(f.facetype, FACETYPE_PLANAR | FACETYPE_TRISURF | FACETYPE_PATCH) {
+            if matches!(
+                f.facetype,
+                FACETYPE_PLANAR | FACETYPE_TRISURF | FACETYPE_PATCH
+            ) {
                 check_range("face verts", f.first_vert, f.num_verts, self.vertices.len())?;
-                check_range("face elements", f.first_elem, f.num_elems, self.elements.len())?;
+                check_range(
+                    "face elements",
+                    f.first_elem,
+                    f.num_elems,
+                    self.elements.len(),
+                )?;
             }
             if matches!(f.facetype, FACETYPE_PLANAR | FACETYPE_TRISURF) && f.num_elems % 3 != 0 {
                 return Err(BspError::IndexOutOfRange {
-                    what: "face elements (not a multiple of 3)".into(), index: f.num_elems as i64, limit: 3,
+                    what: "face elements (not a multiple of 3)".into(),
+                    index: f.num_elems as i64,
+                    limit: 3,
                 });
             }
             if matches!(f.facetype, FACETYPE_PLANAR | FACETYPE_TRISURF) {
@@ -314,7 +551,9 @@ impl Bsp {
                 for &e in &self.elements[s..s + f.num_elems as usize] {
                     if e >= f.num_verts as u32 {
                         return Err(BspError::IndexOutOfRange {
-                            what: "element".into(), index: e as i64, limit: f.num_verts as usize,
+                            what: "element".into(),
+                            index: e as i64,
+                            limit: f.num_verts as usize,
                         });
                     }
                 }
@@ -322,6 +561,148 @@ impl Bsp {
         }
         for m in &self.models {
             check_range("model faces", m.first_face, m.num_faces, self.faces.len())?;
+            check_range(
+                "model brushes",
+                m.first_brush,
+                m.num_brushes,
+                self.brushes.len(),
+            )?;
+        }
+        for (index, p) in self.planes.iter().enumerate() {
+            if !p.dist.is_finite()
+                || p.normal.iter().any(|c| !c.is_finite())
+                || p.normal.iter().all(|c| *c == 0.0)
+            {
+                return Err(BspError::InvalidPlane { index });
+            }
+        }
+        for node in &self.nodes {
+            if node.plane >= self.planes.len() {
+                return Err(BspError::IndexOutOfRange {
+                    what: "node.plane".into(),
+                    index: node.plane as i64,
+                    limit: self.planes.len(),
+                });
+            }
+            for &child in &node.children {
+                if child >= 0 {
+                    if child as usize >= self.nodes.len() {
+                        return Err(BspError::IndexOutOfRange {
+                            what: "node.child".into(),
+                            index: child as i64,
+                            limit: self.nodes.len(),
+                        });
+                    }
+                } else {
+                    let leaf = -(child as i64) - 1;
+                    if leaf < 0 || leaf as usize >= self.leafs.len() {
+                        return Err(BspError::IndexOutOfRange {
+                            what: "node.leaf".into(),
+                            index: leaf,
+                            limit: self.leafs.len(),
+                        });
+                    }
+                }
+            }
+        }
+        let mut node_state = vec![0u8; self.nodes.len()];
+        for root in 0..self.nodes.len() {
+            if node_state[root] != 0 {
+                continue;
+            }
+            let mut stack = vec![(root, false)];
+            while let Some((index, leaving)) = stack.pop() {
+                if leaving {
+                    node_state[index] = 2;
+                    continue;
+                }
+                if node_state[index] == 2 {
+                    continue;
+                }
+                if node_state[index] == 1 {
+                    return Err(BspError::NodeCycle { index });
+                }
+                node_state[index] = 1;
+                stack.push((index, true));
+                for &child in self.nodes[index].children.iter().rev() {
+                    if child >= 0 {
+                        let child = child as usize;
+                        if node_state[child] == 1 {
+                            return Err(BspError::NodeCycle { index: child });
+                        }
+                        if node_state[child] == 0 {
+                            stack.push((child, false));
+                        }
+                    }
+                }
+            }
+        }
+        for leaf in &self.leafs {
+            check_range(
+                "leaf faces",
+                leaf.first_leaf_face as i32,
+                leaf.num_leaf_faces as i32,
+                self.leaf_faces.len(),
+            )?;
+            check_range(
+                "leaf brushes",
+                leaf.first_leaf_brush as i32,
+                leaf.num_leaf_brushes as i32,
+                self.leaf_brushes.len(),
+            )?;
+            for &face in
+                &self.leaf_faces[leaf.first_leaf_face..leaf.first_leaf_face + leaf.num_leaf_faces]
+            {
+                if face >= self.faces.len() {
+                    return Err(BspError::IndexOutOfRange {
+                        what: "leaf.face".into(),
+                        index: face as i64,
+                        limit: self.faces.len(),
+                    });
+                }
+            }
+            for &brush in &self.leaf_brushes
+                [leaf.first_leaf_brush..leaf.first_leaf_brush + leaf.num_leaf_brushes]
+            {
+                if brush >= self.brushes.len() {
+                    return Err(BspError::IndexOutOfRange {
+                        what: "leaf.brush".into(),
+                        index: brush as i64,
+                        limit: self.brushes.len(),
+                    });
+                }
+            }
+        }
+        for brush in &self.brushes {
+            check_range(
+                "brush sides",
+                brush.first_side as i32,
+                brush.num_sides as i32,
+                self.brush_sides.len(),
+            )?;
+            if brush.shader >= self.shaders.len() {
+                return Err(BspError::IndexOutOfRange {
+                    what: "brush.shader".into(),
+                    index: brush.shader as i64,
+                    limit: self.shaders.len(),
+                });
+            }
+        }
+        for side in &self.brush_sides {
+            if side.plane >= self.planes.len() {
+                return Err(BspError::IndexOutOfRange {
+                    what: "brushside.plane".into(),
+                    index: side.plane as i64,
+                    limit: self.planes.len(),
+                });
+            }
+            if side.shader >= self.shaders.len() {
+                return Err(BspError::IndexOutOfRange {
+                    what: "brushside.shader".into(),
+                    index: side.shader as i64,
+                    limit: self.shaders.len(),
+                });
+            }
         }
         Ok(())
     }
@@ -329,7 +710,9 @@ impl Bsp {
     /// Triangle mesh of a model (0 = world): planar and trisurf faces only.
     pub fn model_mesh(&self, model: usize) -> Result<WorldMesh, BspError> {
         let m = self.models.get(model).ok_or(BspError::IndexOutOfRange {
-            what: "model".into(), index: model as i64, limit: self.models.len(),
+            what: "model".into(),
+            index: model as i64,
+            limit: self.models.len(),
         })?;
         let mut mesh = WorldMesh::default();
         for f in &self.faces[m.first_face as usize..(m.first_face + m.num_faces) as usize] {
@@ -355,7 +738,11 @@ impl Bsp {
 
 fn check_range(what: &str, first: i32, num: i32, limit: usize) -> Result<(), BspError> {
     if first < 0 || num < 0 || (first as i64 + num as i64) > limit as i64 {
-        return Err(BspError::IndexOutOfRange { what: what.into(), index: first as i64 + num as i64, limit });
+        return Err(BspError::IndexOutOfRange {
+            what: what.into(),
+            index: first as i64 + num as i64,
+            limit,
+        });
     }
     Ok(())
 }

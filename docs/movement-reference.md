@@ -164,6 +164,12 @@ game trigger logic. For those cases the harness must be extended with recorded
 BSP/collision fixtures before its results can serve as a complete movement
 acceptance gate.
 
+The independent Rust BSP collision tests are under `tools/bsp-poc`: they check
+parsing, brush traces, and trace outputs without running `Pmove`. Keep those
+results separate from movement traces so a collision mismatch is distinguishable
+from movement integration; this does not add a Rust movement implementation or
+a live map-driven `Pmove` comparison.
+
 No in-game session or reference BSP assets are available in this repository
 checkout, so live behavior has **not** been independently verified here. To
 complete that cross-check, run the same command sequence and map in a legacy
