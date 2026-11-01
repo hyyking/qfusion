@@ -122,4 +122,7 @@ Continuous replay accumulates sub-tolerance drift and diverges chaotically once 
 Findings from a 15336-tick wbomb1 session:
 
 - Dash ticks differ by 0.10-0.14 u/s in velocity: the legacy horizontal normalisation uses an approximate reciprocal square root. Reported, reference semantics unchanged.
+- A second 30778-tick session shows the same: 11 ticks out of tolerance, all dash ticks (event 9), velocity only, max 0.19 u/s (about 3e-4 relative, the size of `_mm_rsqrt_ss`'s ~12-bit error in the legacy `VectorNormalizeFast( dashdir )`). Position error stays below 0.002 and non-dash ticks match to float noise.
+- Large max errors in continuous mode (hundreds of u/s) are chaotic drift from such sub-tolerance seeds, not single-step errors.
+- Point-contents queries are compared on the bits movement reads (water, solid, player clip). The legacy BSP reports extra structural bits (e.g. `0x30000000`) that no movement code uses.
 - A zero-length box trace flush against a wall is start-solid in the legacy position test; the Rust trace now implements that special case (`Bsp::trace` with `start == end`). Recordings made before this fix no longer replay bit-exactly at the affected ticks.

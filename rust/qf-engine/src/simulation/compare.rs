@@ -8,8 +8,11 @@
 use std::cell::{Cell, RefCell};
 use std::fmt::{self, Write as _};
 
-use super::pmove::{PmTrace, PmoveWorld, Vec3};
+use super::pmove::{CONTENTS_PLAYERCLIP, CONTENTS_SOLID, MASK_WATER, PmTrace, PmoveWorld, Vec3};
 use super::recording::{Recording, TickResult};
+
+/// Content bits a point query can report in the Rust world; movement only reads these.
+const POINT_CONTENTS_MASK: u32 = MASK_WATER | CONTENTS_SOLID | CONTENTS_PLAYERCLIP;
 
 /// Tolerances of the trajectory comparison. The default matches the legacy fixtures: the
 /// original uses `rsqrtss` for dash normalisation, which leaves ~0.033 of error.
@@ -544,7 +547,7 @@ pub fn classify(
                         detail: format!("rust point {rp:?}, legacy point {lp:?}"),
                     };
                 }
-                if rc != lc {
+                if rc & POINT_CONTENTS_MASK != lc & POINT_CONTENTS_MASK {
                     return Cause::Collision {
                         call: index,
                         detail: format!("point contents at {rp:?}: rust {rc:#x}, legacy {lc:#x}"),
