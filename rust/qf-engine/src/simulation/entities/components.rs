@@ -77,6 +77,11 @@ pub(super) enum TouchKind {
     Multi {
         not_player: bool,
     },
+    /// Door trigger field or plat centre trigger of the mover at `owner`.
+    MoverTrigger {
+        owner: usize,
+        plat: bool,
+    },
 }
 
 /// What happens when another entity fires this one (`ent->use`).
@@ -102,6 +107,8 @@ pub(super) enum UseKind {
     Print { silent: bool },
     /// `use_killbox`.
     Killbox,
+    /// The `use` of the brush mover at this index of the mover list.
+    Mover(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

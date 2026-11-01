@@ -62,7 +62,7 @@ fn trigger_wait(world: &mut World, entity: Entity, time_ms: i64) -> bool {
 }
 
 /// `G_UseTargets`.
-fn use_targets(world: &mut World, source: Entity) {
+pub(super) fn use_targets(world: &mut World, source: Entity) {
     let Some(links) = world.get::<Links>(source).cloned() else {
         return;
     };
@@ -140,6 +140,7 @@ pub(super) fn use_entity(world: &mut World, entity: Entity) {
     let lump = lump_of(world, entity);
     match kind {
         UseKind::Multi => multi_trigger(world, entity),
+        UseKind::Mover(index) => super::movers::use_mover(world, index),
         UseKind::Enable => {
             if let Some(mut enabled) = world.get_mut::<Enabled>(entity) {
                 enabled.0 = true;
@@ -392,7 +393,9 @@ pub(super) fn touch(
                 && (0..3).all(|axis| {
                     mins[axis] <= volume.absmax[axis] && maxs[axis] >= volume.absmin[axis]
                 })
-                && models.box_touches_model(volume.model, volume.origin, mins, maxs)
+                // Model 0 marks a plain box volume (door and plat triggers).
+                && (volume.model == 0
+                    || models.box_touches_model(volume.model, volume.origin, mins, maxs))
         })
         .map(|(entity, lump, ..)| (lump.0, entity))
         .collect();
@@ -485,6 +488,11 @@ fn touch_entity(world: &mut World, entity: Entity, time_ms: i64) {
         TouchKind::Multi { not_player } => {
             if !not_player {
                 multi_trigger(world, entity);
+            }
+        }
+        TouchKind::MoverTrigger { owner, plat } => {
+            if player.state.pm_type == PmType::Normal {
+                super::movers::trigger_touched(world, owner, plat);
             }
         }
     }

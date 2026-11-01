@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use super::entities::{BrushModels, MapEntities, TriggerEvent};
+use super::entities::{BrushModels, MapEntities, MoverWorld, PushedPlayer, TriggerEvent};
 use super::player::{NoclipPlayer, PlayerCommand, StepError, TICK_DURATION};
 use super::pmove::{
     BUTTON_SPECIAL, PmType, PmoveCommand, PmoveResult, PmoveRules, PmoveState, PmoveTouch,
-    PmoveWorld, angle_to_short, pmove, pmove_with_touch,
+    PmoveWorld, PredictedEvent, angle_to_short, pmove, pmove_with_touch,
 };
 
 pub const MOVE_AXIS: f32 = 127.0;
@@ -28,6 +28,13 @@ pub struct WalkPlayer {
     pub state: PmoveState,
     pub view_angles: [f32; 3],
     pub rules: PmoveRules,
+    /// Movement events produced by ticks since the last [`ModeSimulation::take_events`].
+    pub events: Vec<PredictedEvent>,
+    /// Entity stood on after the last command (0 is the world, other values
+    /// are brush movers by lump index).
+    pub ground_entity: Option<i32>,
+    /// Entities touched by the last command.
+    pub touched: Vec<i32>,
 }
 
 impl WalkPlayer {
@@ -37,6 +44,9 @@ impl WalkPlayer {
             state: PmoveState::new(player.position),
             view_angles: player.view_angles,
             rules: PmoveRules::default(),
+            events: Vec::new(),
+            ground_entity: None,
+            touched: Vec::new(),
         };
         walk.state.stats.features = u32::MAX;
         walk
@@ -112,6 +122,9 @@ impl WalkPlayer {
             }
             None => pmove(world, &self.rules, &mut self.state, &pm_command),
         };
+        self.events.extend(result.events.iter().cloned());
+        self.ground_entity = result.ground_entity;
+        self.touched = result.touch_entities.clone();
         Ok(TickOutcome {
             command: pm_command,
             result,
@@ -254,8 +267,20 @@ impl ModeSimulation {
         &self.mode
     }
 
+    pub fn mode_mut(&mut self) -> &mut MovementMode {
+        &mut self.mode
+    }
+
     pub fn toggle_mode(&mut self) {
         self.mode.toggle();
+    }
+
+    /// Drains movement events emitted by walking ticks (none in noclip).
+    pub fn take_events(&mut self) -> Vec<PredictedEvent> {
+        match &mut self.mode {
+            MovementMode::Walk(player) => std::mem::take(&mut player.events),
+            MovementMode::Noclip(_) => Vec::new(),
+        }
     }
 
     pub fn advance_frame<W: PmoveWorld>(
@@ -311,8 +336,21 @@ impl ModeSimulation {
             let time_ms = self.ticks * TICK_DURATION.as_millis() as i64;
             match (&mut self.entities, models) {
                 (Some(entities), Some(models)) if self.mode.is_walking() => {
+                    let solid = MoverWorld::new(world, models, entities.mover_poses());
                     let mut touch = entities.player_touch(models, time_ms);
-                    let outcome = self.mode.step(world, command, Some(&mut touch))?;
+                    let outcome = self.mode.step(&solid, command, Some(&mut touch))?;
+                    if let MovementMode::Walk(player) = &mut self.mode {
+                        entities.player_touched(&player.touched, time_ms);
+                        entities.step_movers(
+                            models,
+                            world,
+                            time_ms,
+                            Some(PushedPlayer {
+                                state: &mut player.state,
+                                ground_entity: player.ground_entity,
+                            }),
+                        );
+                    }
                     let events = entities.drain_events();
                     Self::log_tick(&mut self.tick_log, &self.mode, outcome, events.len());
                     if let MovementMode::Walk(player) = &mut self.mode
@@ -330,6 +368,9 @@ impl ModeSimulation {
                     let mut fired = 0;
                     if let Some(entities) = &mut self.entities {
                         entities.think(time_ms);
+                        if let Some(models) = models {
+                            entities.step_movers(models, world, time_ms, None);
+                        }
                         let events = entities.drain_events();
                         fired = events.len();
                         self.trigger_events.extend(events);

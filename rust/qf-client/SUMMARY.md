@@ -12,6 +12,10 @@ Automated workspace checks (`cargo fmt --all -- --check`, `cargo clippy --worksp
 
 The installed `wbomb1` map was parsed through the engine smoke test and BSP inspector.
 
+## Bomb and Defuse (local)
+
+By default the client runs the engine's Bomb and Defuse gametype with the player on a team (`--team alpha|beta`, `--freeplay` disables). The HUD shows score, round state, clock, role, bomb status/progress, health and armor. Keys: G drop bomb, K suicide, T switch team. No weapon firing yet. Logic lives in `bomb.rs` (no GPU types, unit tested).
+
 ## Runtime limitations
 
 - The renderer remains a BSP preview with no textures or lightmaps; patches are tessellated.

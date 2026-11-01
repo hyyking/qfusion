@@ -1,11 +1,11 @@
 //! Window/input lifecycle (winit). Wires input events to renderer and audio.
 //! Renders a parsed BSP world mesh. Mouse look uses raw device motion (cursor events are ignored). Escape releases the grab, click or focus re-grabs, Shift+Escape or window close exits.
 
-mod audio;
+mod bomb;
+mod game_sound;
 mod hud;
 mod math;
 mod render;
-mod tone;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use hud::HudElement;
 use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
+use qf_engine::game::Team;
 use qf_engine::simulation::bsp_world::BspWorld;
 use qf_engine::simulation::entities::{MapEntities, TriggerEvent};
 use qf_engine::simulation::player::NoclipPlayer;
@@ -25,7 +26,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--record FILE]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--record FILE]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
 
 /// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
 /// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
@@ -39,9 +40,13 @@ const MAX_PITCH: f32 = 89.0;
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<render::Renderer>,
-    audio: Option<audio::AudioOut>,
+    audio: Option<game_sound::GameSound>,
+    game_dirs: Vec<PathBuf>,
+    map_pk3: Option<PathBuf>,
     world_mesh: Option<WorldMesh>,
-    bsp: Bsp,
+    bsp: Arc<Bsp>,
+    /// Local Bomb and Defuse match; absent with `--freeplay`.
+    bomb: Option<bomb::BombSession>,
     simulation: ModeSimulation,
     /// Look direction owned by the client. The simulation only sees it on 125 Hz ticks, so
     /// re-reading it from there would drop input on frames that run no tick.
@@ -64,16 +69,20 @@ struct App {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     fn new(
-        bsp: Bsp,
+        bsp: Arc<Bsp>,
+        bomb: Option<bomb::BombSession>,
         world_mesh: WorldMesh,
         player: NoclipPlayer,
         sensitivity: f32,
+        game_dirs: Vec<PathBuf>,
+        map_pk3: Option<PathBuf>,
         map: MapIdentity,
         record_path: Option<PathBuf>,
     ) -> Self {
         let mut simulation = ModeSimulation::new(player);
-        let entities = MapEntities::spawn(&bsp.parsed_entities, &bsp);
+        let entities = MapEntities::spawn(&bsp.parsed_entities, &*bsp);
         for warning in entities.warnings() {
             eprintln!(
                 "entity {} ({}): {}",
@@ -87,19 +96,15 @@ impl App {
         );
         simulation.set_entities(entities);
         simulation.toggle_mode();
-        let audio = match audio::AudioOut::new() {
-            Ok(a) => Some(a),
-            Err(e) => {
-                eprintln!("audio unavailable: {e} (press B to retry)");
-                None
-            }
-        };
         let mut app = Self {
             window: None,
             renderer: None,
-            audio,
+            audio: None,
+            game_dirs,
+            map_pk3,
             world_mesh: Some(world_mesh),
             bsp,
+            bomb,
             view_angles: simulation.mode().view().1,
             simulation,
             pressed_keys: HashSet::new(),
@@ -116,6 +121,7 @@ impl App {
             mouse_delta: [0.0; 2],
             last_frame: None,
         };
+        app.start_audio();
         if let Some(path) = record_path {
             app.start_recording(Some(path));
         }
@@ -183,6 +189,14 @@ impl App {
         }
     }
 
+    fn start_audio(&mut self) {
+        let vfs = game_sound::mount_content(&self.game_dirs, self.map_pk3.as_deref());
+        match game_sound::GameSound::new(vfs, &self.bsp) {
+            Ok(a) => self.audio = Some(a),
+            Err(e) => eprintln!("audio unavailable: {e} (press B to retry)"),
+        }
+    }
+
     fn key_axis(&self, positive: KeyCode, negative: KeyCode) -> f32 {
         let positive = if self.pressed_keys.contains(&positive) {
             1.0
@@ -217,13 +231,10 @@ impl App {
 
     fn play_sound(&mut self) {
         if self.audio.is_none() {
-            match audio::AudioOut::new() {
-                Ok(a) => self.audio = Some(a),
-                Err(e) => eprintln!("cannot play sound: {e}"),
-            }
+            self.start_audio();
         }
-        if let Some(a) = &self.audio {
-            a.play_beep();
+        if let Some(a) = &mut self.audio {
+            a.play_test_sound();
         }
     }
 }
@@ -234,7 +245,7 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("qfusion - WASD move, Space jump, C crouch, Right mouse/Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B beep, +/- sensitivity, Esc release mouse, Shift+Esc quit");
+            .with_title("qfusion - WASD move, Space jump, C crouch, Right mouse/Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B test sound, +/- sensitivity, Esc release mouse, Shift+Esc quit");
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -248,7 +259,21 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         };
-        match render::Renderer::new(window.clone(), &world_mesh) {
+        let mut submodels: Vec<(usize, WorldMesh)> = Vec::new();
+        for pose in self
+            .simulation
+            .entities()
+            .map(|e| e.mover_poses())
+            .unwrap_or_default()
+        {
+            if submodels.iter().all(|(m, _)| *m != pose.model) {
+                match self.bsp.model_mesh(pose.model) {
+                    Ok(mesh) => submodels.push((pose.model, mesh)),
+                    Err(e) => eprintln!("mover model *{}: {e}", pose.model),
+                }
+            }
+        }
+        match render::Renderer::new(window.clone(), &world_mesh, submodels) {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
                 eprintln!("failed to initialize renderer: {e}");
@@ -314,6 +339,21 @@ impl ApplicationHandler for App {
                         Key::Character(ref key) if key.eq_ignore_ascii_case("b") => {
                             self.play_sound()
                         }
+                        Key::Character(ref key) if key.eq_ignore_ascii_case("g") => {
+                            if let Some(bomb) = &mut self.bomb {
+                                bomb.command("drop", "");
+                            }
+                        }
+                        Key::Character(ref key) if key.eq_ignore_ascii_case("k") => {
+                            if let Some(bomb) = &mut self.bomb {
+                                bomb.command("suicide", "");
+                            }
+                        }
+                        Key::Character(ref key) if key.eq_ignore_ascii_case("t") => {
+                            if let Some(bomb) = &mut self.bomb {
+                                bomb.switch_team();
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -370,13 +410,30 @@ impl ApplicationHandler for App {
                 };
                 self.view_angles = view_angles;
                 let world = BspWorld::new(&self.bsp);
-                if let Err(error) = self
+                if let Some(bomb) = &mut self.bomb {
+                    bomb.apply_movement_lock(&mut self.simulation);
+                }
+                let ticks = match self
                     .simulation
-                    .advance_frame_with_entities(&world, &self.bsp, elapsed, command)
+                    .advance_frame_with_entities(&world, &*self.bsp, elapsed, command)
                 {
-                    eprintln!("player simulation failed: {error}");
-                    event_loop.exit();
-                    return;
+                    Ok(ticks) => ticks,
+                    Err(error) => {
+                        eprintln!("player simulation failed: {error}");
+                        event_loop.exit();
+                        return;
+                    }
+                };
+                let mut respawned = false;
+                if let Some(bomb) = &mut self.bomb {
+                    match bomb.advance(ticks, &mut self.simulation) {
+                        Ok(spawned) => respawned = spawned,
+                        Err(error) => {
+                            eprintln!("{error}");
+                            event_loop.exit();
+                            return;
+                        }
+                    }
                 }
                 self.collect_recorded_ticks();
                 let trigger_events = self.simulation.drain_trigger_events();
@@ -386,13 +443,21 @@ impl ApplicationHandler for App {
                 self.view_angles = view_after_frame(
                     self.view_angles,
                     self.simulation.mode().view().1,
-                    teleported,
+                    teleported || respawned,
                 );
-                for event in trigger_events {
+                let (eye, _) = self.simulation.mode().view();
+                for event in &trigger_events {
                     println!("trigger: {event:?}");
                 }
+                if let Some(audio) = &mut self.audio {
+                    audio.update(
+                        eye,
+                        self.view_angles[1],
+                        &mut self.simulation,
+                        &trigger_events,
+                    );
+                }
                 if let Some(r) = &mut self.renderer {
-                    let (eye, _) = self.simulation.mode().view();
                     let [width, height] = r.size();
                     let scale = self
                         .window
@@ -414,7 +479,15 @@ impl ApplicationHandler for App {
                     });
                     self.hud_ups.draw(&screen, &mut self.hud_canvas);
                     self.hud_record.draw(&screen, &mut self.hud_canvas);
-                    r.render(eye, self.view_angles, &self.hud_canvas);
+                    if let Some(bomb) = &self.bomb {
+                        bomb.hud.draw(&screen, &mut self.hud_canvas);
+                    }
+                    let movers = self
+                        .simulation
+                        .entities()
+                        .map(|e| e.mover_poses())
+                        .unwrap_or_default();
+                    r.render(eye, self.view_angles, &movers, &self.hud_canvas);
                 }
                 if let Some(w) = &self.window {
                     w.request_redraw();
@@ -431,9 +504,10 @@ impl ApplicationHandler for App {
 
 /// The simulation only stores view angles when a 125 Hz tick runs, so adopting them on every
 /// frame would discard the frame's mouse/arrow delta whenever no tick ran. Only teleporters,
-/// which rewrite the look direction inside the simulation, override the client-owned angles.
-fn view_after_frame(client: [f32; 3], simulation: [f32; 3], teleported: bool) -> [f32; 3] {
-    if teleported { simulation } else { client }
+/// and gametype spawns, which rewrite the look direction inside the simulation, override the
+/// client-owned angles.
+fn view_after_frame(client: [f32; 3], simulation: [f32; 3], rewritten: bool) -> [f32; 3] {
+    if rewritten { simulation } else { client }
 }
 
 fn default_recording_path() -> PathBuf {
@@ -444,10 +518,13 @@ fn default_recording_path() -> PathBuf {
 }
 
 struct Options {
-    bsp: Bsp,
+    bsp: Arc<Bsp>,
+    bomb: Option<bomb::BombSession>,
     mesh: WorldMesh,
     player: NoclipPlayer,
     sensitivity: f32,
+    game_dirs: Vec<PathBuf>,
+    map_pk3: Option<PathBuf>,
     map: MapIdentity,
     record_path: Option<PathBuf>,
 }
@@ -465,9 +542,25 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
     let mut entry = String::from("maps/wbomb1.bsp");
     let mut sensitivity = DEFAULT_SENSITIVITY;
     let mut record_path = None;
+    let mut game_dirs = Vec::new();
+    let mut team = Team::Alpha;
+    let mut freeplay = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--freeplay" => freeplay = true,
+            "--team" => {
+                team = match args.next().as_deref() {
+                    Some("alpha") => Team::Alpha,
+                    Some("beta") => Team::Beta,
+                    _ => return Err("--team requires alpha or beta".into()),
+                }
+            }
             "--entry" => entry = args.next().ok_or("--entry requires a value")?,
+            "--game-dir" => {
+                game_dirs.push(PathBuf::from(
+                    args.next().ok_or("--game-dir requires a value")?,
+                ));
+            }
             "--sensitivity" => {
                 sensitivity = args
                     .next()
@@ -512,14 +605,26 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
     if let Some((mins, maxs)) = mesh.bounds() {
         println!("world bounds: {mins:?} .. {maxs:?}");
     }
+    let bsp = Arc::new(bsp);
+    let bomb = if freeplay {
+        None
+    } else {
+        Some(bomb::BombSession::new(bsp.clone(), team, 1).map_err(|e| e.to_string())?)
+    };
     for diagnostic in &bsp.diagnostics {
         eprintln!("BSP: {diagnostic}");
     }
     Ok(Some(Options {
         bsp,
+        bomb,
         mesh,
         player,
         sensitivity,
+        game_dirs,
+        map_pk3: input
+            .to_lowercase()
+            .ends_with(".pk3")
+            .then(|| path.to_path_buf()),
         map,
         record_path,
     }))
@@ -545,9 +650,12 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Poll);
     if let Err(e) = event_loop.run_app(&mut App::new(
         options.bsp,
+        options.bomb,
         options.mesh,
         options.player,
         options.sensitivity,
+        options.game_dirs,
+        options.map_pk3,
         options.map,
         options.record_path,
     )) {
@@ -573,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn teleport_overrides_client_view() {
+    fn teleport_or_spawn_overrides_client_view() {
         assert_eq!(
             view_after_frame([0.0, 1.0, 0.0], [0.0, 90.0, 0.0], true),
             [0.0, 90.0, 0.0]

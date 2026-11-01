@@ -191,6 +191,113 @@ fn all_official_maps_spawn_without_warnings() {
         maps += 1;
     }
     eprintln!("{maps} maps; unsupported union: {union:#?}");
+    for classname in qf_engine::simulation::entities::SUPPORTED_MOVERS {
+        assert!(
+            !union.contains_key(*classname),
+            "{classname} is unsupported"
+        );
+    }
+}
+
+/// Walks from a spawn on every official map that has movers, activating them
+/// all, and checks that nothing goes non-finite.
+#[test]
+fn all_official_maps_with_movers_run_headlessly() {
+    use qf_engine::simulation::bsp_world::BspWorld;
+    use qf_engine::simulation::entities::SUPPORTED_MOVERS;
+    let base = std::env::var("WARSOW_BASEWSW")
+        .unwrap_or_else(|_| r"C:\Program Files (x86)\Warsow 2.1\basewsw".into());
+    let Ok(dir) = std::fs::read_dir(&base) else {
+        eprintln!("skipping: {base} unavailable");
+        return;
+    };
+    let mut with_movers = 0;
+    for file in dir.flatten() {
+        let name = file.file_name().to_string_lossy().into_owned();
+        let Some(map_name) = name
+            .strip_prefix("map_")
+            .and_then(|n| n.strip_suffix(".pk3"))
+        else {
+            continue;
+        };
+        let Ok(data) = read_pk3_entry(&file.path(), &format!("maps/{map_name}.bsp")) else {
+            continue;
+        };
+        let Ok(bsp) = Bsp::parse(&data) else { continue };
+        let map = MapEntities::spawn(&bsp.parsed_entities, &bsp);
+        let movers: Vec<usize> = SUPPORTED_MOVERS
+            .iter()
+            .flat_map(|classname| map.triggers_of(classname))
+            .collect();
+        if movers.is_empty() {
+            continue;
+        }
+        with_movers += 1;
+        let spawn = bsp
+            .parsed_entities
+            .iter()
+            .find(|entity| {
+                entity
+                    .properties
+                    .iter()
+                    .any(|(k, v)| k == "classname" && v.starts_with("info_player_"))
+            })
+            .and_then(|entity| {
+                entity
+                    .properties
+                    .iter()
+                    .find(|(k, _)| k == "origin")
+                    .map(|(_, v)| v.clone())
+            })
+            .and_then(|origin| {
+                let v: Vec<f32> = origin
+                    .split_ascii_whitespace()
+                    .filter_map(|c| c.parse().ok())
+                    .collect();
+                (v.len() == 3).then(|| [v[0], v[1], v[2] + 8.0])
+            })
+            .unwrap_or_else(|| panic!("{map_name}: no spawn"));
+        let world = BspWorld::new(&bsp);
+        let mut sim = walking_sim(spawn, map);
+        let mut walked = 0.0f32;
+        for tick in 0..1500 {
+            if tick == 125 {
+                let time = 125 * 8;
+                let entities = sim.entities_mut().unwrap();
+                for &lump in &movers {
+                    entities.activate(lump, time);
+                }
+            }
+            let command = WalkCommand {
+                forward: 1.0,
+                view_angles: [0.0, (tick / 100) as f32 * 40.0, 0.0],
+                ..WalkCommand::default()
+            };
+            sim.advance_frame_with_entities(&world, &bsp, Duration::from_millis(8), command)
+                .unwrap();
+            let (origin, velocity) = state_of(&sim);
+            assert!(
+                origin.iter().chain(&velocity).all(|v| v.is_finite()),
+                "{map_name} tick {tick}: {origin:?} {velocity:?}"
+            );
+            for pose in sim.entities().unwrap().mover_poses() {
+                assert!(
+                    pose.origin
+                        .iter()
+                        .chain(&pose.angles)
+                        .all(|v| v.is_finite()),
+                    "{map_name} tick {tick}: {pose:?}"
+                );
+            }
+            walked = walked.max(
+                (0..2)
+                    .map(|a| (origin[a] - spawn[a]).abs())
+                    .fold(0.0, f32::max),
+            );
+        }
+        assert!(walked > 16.0, "{map_name}: the player never left the spawn");
+    }
+    eprintln!("{with_movers} maps with movers ran");
 }
 
 #[test]
