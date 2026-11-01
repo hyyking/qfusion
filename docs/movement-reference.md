@@ -167,8 +167,19 @@ acceptance gate.
 The independent Rust BSP collision tests are under `rust/qf-engine/tests/bsp.rs`: they check
 parsing, brush traces, and trace outputs without running `Pmove`. Keep those
 results separate from movement traces so a collision mismatch is distinguishable
-from movement integration; this does not add a Rust movement implementation or
-a live map-driven `Pmove` comparison.
+from movement integration.
+
+The Rust port is `rust/qf-engine/src/simulation/pmove.rs`. `rust/qf-engine/tests/pmove_traces.rs`
+replays the 125 Hz fixture `rust/qf-engine/tests/fixtures/pmove_125hz.csv` (recorded with this
+harness) through it on a re-implementation of the harness plane world, so it checks movement
+integration only. All nine scenarios (jump tap/hold, air direction change, dash into wall,
+wall jump after dash, slow/fast landing, water swim, ladder climb) match: every exact invariant
+is identical, and the largest deviation is 0.0068 position and 0.0326 velocity units (dash
+scenarios, the legacy x64 build uses the SSE `rsqrtss` estimate where Rust uses an exact
+square root), inside the 0.05 tolerance. `rust/qf-engine/tests/pmove_bsp.rs` walks on BSP
+brush collision (synthetic slab and, when installed, `wbomb1`). Not covered: 62.5 Hz and other
+rates (only 125 Hz is recorded), slopes, steps and crouch sliding (no fixture), patch and
+submodel collision, trigger touching and `PM_UpdateDeltaAngles` (game-side, not ported).
 
 No in-game session or reference BSP assets are available in this repository
 checkout, so live behavior has **not** been independently verified here. To

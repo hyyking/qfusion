@@ -7,7 +7,6 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use qf_engine::content::bsp::WorldMesh;
-use qf_engine::simulation::player::NoclipPlayer;
 
 use crate::math;
 
@@ -181,7 +180,7 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, &self.config);
     }
 
-    pub fn render(&mut self, player: &NoclipPlayer) {
+    pub fn render(&mut self, eye: [f32; 3], view_angles: [f32; 3]) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -195,16 +194,11 @@ impl Renderer {
 
         let aspect = self.config.width as f32 / self.config.height as f32;
         let fov_y = std::f32::consts::FRAC_PI_2;
-        let [pitch, yaw, _] = player.view_angles.map(f32::to_radians);
+        let [pitch, yaw, _] = view_angles.map(f32::to_radians);
         let forward = [
             pitch.cos() * yaw.cos(),
             pitch.cos() * yaw.sin(),
             pitch.sin(),
-        ];
-        let eye = [
-            player.position[0],
-            player.position[1],
-            player.position[2] + 30.0,
         ];
         let target = [
             eye[0] + forward[0],

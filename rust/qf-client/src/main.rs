@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
-use qf_engine::simulation::player::{FixedStepSimulation, NoclipPlayer, PlayerCommand};
+use qf_engine::simulation::bsp_world::BspWorld;
+use qf_engine::simulation::player::NoclipPlayer;
+use qf_engine::simulation::walk::{ModeSimulation, WalkCommand};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -26,13 +28,16 @@ struct App {
     renderer: Option<render::Renderer>,
     audio: Option<audio::AudioOut>,
     world_mesh: Option<WorldMesh>,
-    simulation: FixedStepSimulation,
+    bsp: Bsp,
+    simulation: ModeSimulation,
     pressed_keys: HashSet<KeyCode>,
     last_frame: Option<Instant>,
 }
 
 impl App {
-    fn new(world_mesh: WorldMesh, player: NoclipPlayer) -> Self {
+    fn new(bsp: Bsp, world_mesh: WorldMesh, player: NoclipPlayer) -> Self {
+        let mut simulation = ModeSimulation::new(player);
+        simulation.toggle_mode();
         let audio = match audio::AudioOut::new() {
             Ok(a) => Some(a),
             Err(e) => {
@@ -45,7 +50,8 @@ impl App {
             renderer: None,
             audio,
             world_mesh: Some(world_mesh),
-            simulation: FixedStepSimulation::new(player),
+            bsp,
+            simulation,
             pressed_keys: HashSet::new(),
             last_frame: None,
         }
@@ -84,7 +90,7 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("qfusion noclip - WASD move, R/F rise/fall, arrows look, B beep, Esc quit");
+            .with_title("qfusion - WASD move, Space jump, C crouch, Shift dash, V walk/noclip, R/F noclip up/down, arrows look, B beep, Esc quit");
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -144,23 +150,31 @@ impl ApplicationHandler for App {
                     .replace(now)
                     .map_or(Duration::ZERO, |last| now.duration_since(last));
                 let look_speed = 90.0 * elapsed.as_secs_f32();
-                let mut view_angles = self.simulation.player().view_angles;
+                let mut view_angles = self.simulation.mode().view().1;
                 view_angles[0] += self.key_axis(KeyCode::ArrowUp, KeyCode::ArrowDown) * look_speed;
                 view_angles[1] +=
                     self.key_axis(KeyCode::ArrowRight, KeyCode::ArrowLeft) * look_speed;
-                let command = PlayerCommand {
+                let up = if self.simulation.mode().is_walking() {
+                    self.key_axis(KeyCode::Space, KeyCode::KeyC)
+                } else {
+                    self.key_axis(KeyCode::KeyR, KeyCode::KeyF)
+                };
+                let command = WalkCommand {
                     forward: self.key_axis(KeyCode::KeyW, KeyCode::KeyS),
                     right: self.key_axis(KeyCode::KeyD, KeyCode::KeyA),
-                    up: self.key_axis(KeyCode::KeyR, KeyCode::KeyF),
+                    up,
+                    special: self.pressed_keys.contains(&KeyCode::ShiftLeft),
                     view_angles,
                 };
-                if let Err(error) = self.simulation.advance_frame(elapsed, command) {
+                let world = BspWorld::new(&self.bsp);
+                if let Err(error) = self.simulation.advance_frame(&world, elapsed, command) {
                     eprintln!("player simulation failed: {error}");
                     event_loop.exit();
                     return;
                 }
                 if let Some(r) = &mut self.renderer {
-                    r.render(self.simulation.player());
+                    let (eye, angles) = self.simulation.mode().view();
+                    r.render(eye, angles);
                 }
                 if let Some(w) = &self.window {
                     w.request_redraw();
@@ -171,7 +185,7 @@ impl ApplicationHandler for App {
     }
 }
 
-fn load_world_mesh() -> Result<Option<(WorldMesh, NoclipPlayer)>, String> {
+fn load_world_mesh() -> Result<Option<(Bsp, WorldMesh, NoclipPlayer)>, String> {
     let mut args = std::env::args().skip(1);
     let Some(input) = args.next() else {
         return Err("missing map input".into());
@@ -211,11 +225,11 @@ fn load_world_mesh() -> Result<Option<(WorldMesh, NoclipPlayer)>, String> {
     for diagnostic in &bsp.diagnostics {
         eprintln!("BSP: {diagnostic}");
     }
-    Ok(Some((mesh, player)))
+    Ok(Some((bsp, mesh, player)))
 }
 
 fn main() {
-    let (world_mesh, player) = match load_world_mesh() {
+    let (bsp, world_mesh, player) = match load_world_mesh() {
         Ok(Some(map)) => map,
         Ok(None) => return,
         Err(e) => {
@@ -232,7 +246,7 @@ fn main() {
         }
     };
     event_loop.set_control_flow(ControlFlow::Poll);
-    if let Err(e) = event_loop.run_app(&mut App::new(world_mesh, player)) {
+    if let Err(e) = event_loop.run_app(&mut App::new(bsp, world_mesh, player)) {
         eprintln!("event loop error: {e}");
         std::process::exit(1);
     }

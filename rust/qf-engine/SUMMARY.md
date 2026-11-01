@@ -1,7 +1,7 @@
 # qfusion engine crate - Summary
 
 ## Goal
-The GPU- and window-independent engine crate reads Warsow/qfusion BSP/PK3 content, parses entities, exposes collision traces, and contains fixed-step noclip player simulation.
+The GPU- and window-independent engine crate reads Warsow/qfusion BSP/PK3 content, parses entities, exposes collision traces, contains fixed-step noclip player simulation, and a port of the legacy Warsow `Pmove` (`simulation::pmove`) with a walking player (`simulation::walk`) over BSP brush collision (`simulation::bsp_world`).
 
 ## Asset
 - Not present in the checkout or submodules.
@@ -52,3 +52,9 @@ The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.
 - `Bsp::trace(start, end, mins, maxs, contents_mask)` returns a brush-only point/box trace, independent of GPU or movement code.
 - Player simulation is exposed through `simulation::player`; it uses parsed BSP entities for spawn selection without depending on window or GPU types.
 - Rendering, window/input, and audio remain owned by `qf-client`.
+
+## Movement
+- `simulation::pmove` ports `gs_pmove.cpp` (ground/air accel, friction, strafe/bunny, jump, dash, wall jump, crouch slide, water, ladders, step/slide collision, landing); fixed 125 Hz; trigger touching and delta angles are not ported.
+- `tests/pmove_traces.rs` replays `tests/fixtures/pmove_125hz.csv` (legacy harness recording): 9/9 scenarios pass, exact invariants equal, trajectories within 0.05 (max 0.0326).
+- `tests/pmove_bsp.rs` walks on BSP brush collision, kept separate so collision issues are not blamed on movement.
+- Gaps: only the 125 Hz recording, no slope/step/crouch-slide fixtures, patch and submodel collision missing.
