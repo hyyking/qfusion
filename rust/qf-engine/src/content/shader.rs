@@ -17,7 +17,10 @@ pub enum MapSource {
     White,
     Image(String),
     /// `animmap <fps> <frames...>`.
-    Anim { fps: f32, frames: Vec<String> },
+    Anim {
+        fps: f32,
+        frames: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +134,12 @@ pub enum TcMod {
     /// Degrees per second.
     Rotate(f32),
     Stretch(Waveform),
-    Turb { base: f32, amp: f32, phase: f32, freq: f32 },
+    Turb {
+        base: f32,
+        amp: f32,
+        phase: f32,
+        freq: f32,
+    },
     Transform([f32; 6]),
 }
 
@@ -858,7 +866,10 @@ textures/a/after { { map after.tga } }
         );
         assert!(!s.depth_write);
         assert_eq!(s.tc_gen, TcGen::Environment);
-        assert_eq!(s.tc_mods, vec![TcMod::Scroll(0.5, -0.25), TcMod::Rotate(30.0)]);
+        assert_eq!(
+            s.tc_mods,
+            vec![TcMod::Scroll(0.5, -0.25), TcMod::Rotate(30.0)]
+        );
     }
 
     #[test]
@@ -931,7 +942,10 @@ textures/a/after { { map after.tga } }
     #[test]
     fn malformed_directives_warn_without_failing() {
         let mut lib = ShaderLib::new();
-        lib.parse_script("x {\n{\nmap\nblendfunc bogus\nrgbgen const\ntcmod nope\n}\n}", "t");
+        lib.parse_script(
+            "x {\n{\nmap\nblendfunc bogus\nrgbgen const\ntcmod nope\n}\n}",
+            "t",
+        );
         assert!(lib.get("x").is_some());
         assert!(!lib.warnings.is_empty());
     }

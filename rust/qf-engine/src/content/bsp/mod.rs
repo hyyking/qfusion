@@ -8,8 +8,10 @@ use std::fmt;
 
 pub mod collision;
 pub mod entities;
+pub mod lightmap;
 pub mod patch;
 pub use collision::{ModelPose, Trace, TraceError, TracePlane};
+pub use lightmap::LightmapAtlas;
 
 pub const LUMP_NAMES: [&str; 18] = [
     "entities",
@@ -116,6 +118,9 @@ pub struct Vertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
     pub normal: [f32; 3],
+    /// Lightmap coordinates within the surface's lightmap block (first style only).
+    pub lm_uv: [f32; 2],
+    pub color: [u8; 4],
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +133,8 @@ pub struct Face {
     pub first_elem: i32,
     pub num_elems: i32,
     pub patch_cp: [i32; 2],
+    /// Lightmap block of the first light style, or -1 if the face has none.
+    pub lm_texnum: i32,
     /// Compiler-provided bounds; patches sharing them subdivide identically (LOD group).
     pub lod_mins: [f32; 3],
     pub lod_maxs: [f32; 3],
@@ -211,6 +218,8 @@ pub struct Bsp {
     pub vertices: Vec<Vertex>,
     pub elements: Vec<u32>,
     pub faces: Vec<Face>,
+    /// Packed style-0 lightmaps (empty when the map has none).
+    pub lightmaps: LightmapAtlas,
     /// Collision facets of solid patch faces (legacy `CM_CreatePatch`).
     pub patches: Vec<patch::PatchCollide>,
     /// Index into `patches` for each face, if it has collision data.
@@ -314,6 +323,11 @@ impl Bsp {
         let (vsize, voff_n, fsize, bssize) = match format {
             Format::Fbsp => (80, 52, 148, 12),
             Format::Ibsp => (44, 28, 104, 8),
+        };
+        // Offsets of the first lightmap coordinate pair and colour within a vertex.
+        let (voff_lm, voff_color) = match format {
+            Format::Fbsp => (20, 64),
+            Format::Ibsp => (20, 40),
         };
 
         let entities = cstr(slice(L_ENTITIES));
@@ -427,6 +441,8 @@ impl Bsp {
                     pos: r.f3(o),
                     uv: [r.f32(o + 12), r.f32(o + 16)],
                     normal: r.f3(o + voff_n),
+                    lm_uv: [r.f32(o + voff_lm), r.f32(o + voff_lm + 4)],
+                    color: r.0[o + voff_color..o + voff_color + 4].try_into().unwrap(),
                 }
             })
             .collect::<Vec<_>>();
@@ -436,7 +452,7 @@ impl Bsp {
         let n = sized(L_FACES, fsize)?;
         let r = Rd(slice(L_FACES));
         let pc = fsize - 8;
-        let faces = (0..n)
+        let faces: Vec<Face> = (0..n)
             .map(|i| {
                 let o = i * fsize;
                 Face {
@@ -448,6 +464,11 @@ impl Bsp {
                     first_elem: r.i32(o + 20),
                     num_elems: r.i32(o + 24),
                     patch_cp: [r.i32(o + pc), r.i32(o + pc + 4)],
+                    lm_texnum: match format {
+                        Format::Fbsp if r.0[o + 28] == 255 => -1,
+                        Format::Fbsp => r.i32(o + 36),
+                        Format::Ibsp => r.i32(o + 28),
+                    },
                     lod_mins: r.f3(o + pc - 36),
                     lod_maxs: r.f3(o + pc - 24),
                 }
@@ -461,6 +482,14 @@ impl Bsp {
             fogs: sized(L_FOGS, 72)?,
         };
 
+        let lightmaps = LightmapAtlas::build(
+            slice(14),
+            match format {
+                Format::Fbsp => 512,
+                Format::Ibsp => 128,
+            },
+            faces.iter().map(|f: &Face| f.lm_texnum),
+        );
         let mut bsp = Bsp {
             format,
             magic: magic_s,
@@ -480,6 +509,7 @@ impl Bsp {
             vertices,
             elements,
             faces,
+            lightmaps,
             patches: Vec::new(),
             face_patch: Vec::new(),
             counts,
@@ -487,7 +517,7 @@ impl Bsp {
         };
         bsp.validate()?;
         bsp.build_patch_collision();
-        for (i, &lump_name) in LUMP_NAMES.iter().take(nlumps).enumerate().skip(14) {
+        for (i, &lump_name) in LUMP_NAMES.iter().take(nlumps).enumerate().skip(15) {
             if bsp.lumps[i].len > 0 {
                 bsp.diagnostics.push(format!(
                     "lump {} ({}) present ({} bytes): preserved as offset/len only, not decoded",
@@ -824,12 +854,24 @@ impl Bsp {
                 let positions: Vec<_> = verts.iter().map(|v| v.pos).collect();
                 let normals: Vec<_> = verts.iter().map(|v| v.normal).collect();
                 let uvs: Vec<_> = verts.iter().map(|v| v.uv).collect();
+                let lm_uvs: Vec<_> = verts
+                    .iter()
+                    .map(|v| self.lightmaps.map_uv(f.lm_texnum, v.lm_uv))
+                    .collect();
+                let colors: Vec<_> = verts.iter().map(|v| v.color.map(f32::from)).collect();
                 let cp = [f.patch_cp[0] as usize, f.patch_cp[1] as usize];
-                let grid = patch::tessellate(&positions, &normals, &uvs, cp, flat);
+                let grid =
+                    patch::tessellate_lit(&positions, &normals, &uvs, &lm_uvs, &colors, cp, flat);
                 let base = mesh.positions.len() as u32;
                 mesh.positions.extend(grid.positions);
                 mesh.normals.extend(grid.normals);
                 mesh.uvs.extend(grid.uvs);
+                mesh.lm_uvs.extend(grid.lm_uvs);
+                mesh.colors.extend(
+                    grid.colors
+                        .iter()
+                        .map(|c| c.map(|x| x.round().clamp(0.0, 255.0) as u8)),
+                );
                 let indices = patch::grid_indices(grid.size);
                 mesh.triangle_shaders
                     .extend(std::iter::repeat_n(f.shader as u32, indices.len() / 3));
@@ -846,6 +888,9 @@ impl Bsp {
                 mesh.positions.push(v.pos);
                 mesh.normals.push(v.normal);
                 mesh.uvs.push(v.uv);
+                mesh.lm_uvs
+                    .push(self.lightmaps.map_uv(f.lm_texnum, v.lm_uv));
+                mesh.colors.push(v.color);
             }
             let e = &self.elements[f.first_elem as usize..(f.first_elem + f.num_elems) as usize];
             for tri in e.chunks_exact(3) {
@@ -873,6 +918,9 @@ pub struct WorldMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
+    /// Atlas lightmap coordinates; `[-1, -1]` where the surface has no lightmap.
+    pub lm_uvs: Vec<[f32; 2]>,
+    pub colors: Vec<[u8; 4]>,
     pub indices: Vec<u32>,
     /// Shader reference index per triangle.
     pub triangle_shaders: Vec<u32>,

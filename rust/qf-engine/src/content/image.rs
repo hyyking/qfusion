@@ -90,7 +90,10 @@ impl Rgba8Image {
         for y in 0..h {
             for x in 0..w {
                 let xs = [(x * 2).min(self.width - 1), (x * 2 + 1).min(self.width - 1)];
-                let ys = [(y * 2).min(self.height - 1), (y * 2 + 1).min(self.height - 1)];
+                let ys = [
+                    (y * 2).min(self.height - 1),
+                    (y * 2 + 1).min(self.height - 1),
+                ];
                 for c in 0..4 {
                     let mut sum = 0u32;
                     for &sy in &ys {
@@ -159,7 +162,11 @@ mod tests {
             height: 1,
             pixels: vec![255; 16],
         };
-        let sizes: Vec<_> = img.mip_chain().iter().map(|m| (m.width, m.height)).collect();
+        let sizes: Vec<_> = img
+            .mip_chain()
+            .iter()
+            .map(|m| (m.width, m.height))
+            .collect();
         assert_eq!(sizes, [(4, 1), (2, 1), (1, 1)]);
     }
 
