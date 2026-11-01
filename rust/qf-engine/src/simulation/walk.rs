@@ -108,6 +108,14 @@ impl MovementMode {
         };
     }
 
+    /// Velocity in units per second; noclip has none and reports zero.
+    pub fn velocity(&self) -> [f32; 3] {
+        match self {
+            Self::Noclip(_) => [0.0; 3],
+            Self::Walk(player) => player.state.velocity,
+        }
+    }
+
     /// Pose for rendering: eye position and view angles.
     pub fn view(&self) -> ([f32; 3], [f32; 3]) {
         match self {

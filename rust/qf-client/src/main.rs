@@ -2,6 +2,7 @@
 //! Renders a parsed BSP world mesh. Mouse look uses raw device motion (cursor events are ignored). Escape releases the grab, click or focus re-grabs, Shift+Escape or window close exits.
 
 mod audio;
+mod hud;
 mod math;
 mod render;
 mod tone;
@@ -11,6 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use hud::HudElement;
 use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
 use qf_engine::simulation::bsp_world::BspWorld;
 use qf_engine::simulation::player::NoclipPlayer;
@@ -45,6 +47,8 @@ struct App {
     view_angles: [f32; 3],
     pressed_keys: HashSet<KeyCode>,
     right_mouse_down: bool,
+    hud_ups: hud::UpsCounter,
+    hud_canvas: hud::Canvas,
     sensitivity: f32,
     mouse_grabbed: bool,
     /// The first raw motion after a grab can carry a stale jump; drop it.
@@ -75,6 +79,8 @@ impl App {
             simulation,
             pressed_keys: HashSet::new(),
             right_mouse_down: false,
+            hud_ups: hud::UpsCounter::new(),
+            hud_canvas: hud::Canvas::default(),
             sensitivity,
             mouse_grabbed: false,
             skip_next_motion: false,
@@ -270,7 +276,23 @@ impl ApplicationHandler for App {
                 }
                 if let Some(r) = &mut self.renderer {
                     let (eye, _) = self.simulation.mode().view();
-                    r.render(eye, self.view_angles);
+                    let [width, height] = r.size();
+                    let scale = self
+                        .window
+                        .as_ref()
+                        .map_or(1.0, |w| w.scale_factor() as f32);
+                    let screen = hud::Screen {
+                        width,
+                        height,
+                        scale,
+                    };
+                    self.hud_ups.update(&hud::HudState {
+                        velocity: self.simulation.mode().velocity(),
+                        frame_seconds: elapsed.as_secs_f32(),
+                    });
+                    self.hud_canvas.clear();
+                    self.hud_ups.draw(&screen, &mut self.hud_canvas);
+                    r.render(eye, self.view_angles, &self.hud_canvas);
                 }
                 if let Some(w) = &self.window {
                     w.request_redraw();
