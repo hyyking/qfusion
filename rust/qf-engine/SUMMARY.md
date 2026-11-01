@@ -36,7 +36,7 @@ The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.
 - Bezier patch faces (220 in wbomb1) are not tessellated; 180 faces are skipped from the world mesh.
 - Flare and foliage faces are skipped (none in wbomb1).
 - Patch-face collision is not implemented; trace comparisons must avoid patch-only collision surfaces. This is relevant to the 220 Bezier patch faces in wbomb1.
-- Inline submodel collision is not exposed; `Bsp::trace` tests world model 0 only.
+- `Bsp::trace` tests world model 0 only; inline submodels are only exposed as `Bsp::box_touches_model` (zero-length box contact for trigger volumes, unrotated, no patches).
 - Fog records are size-checked but not decoded.
 - Lighting, lightgrid, visibility and lightarray are kept as offset/length only.
 - No shader/texture resolution, lightmaps or rendering; parsed entity properties supplement and do not replace the original raw entity string.
@@ -54,7 +54,15 @@ The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.
 - Rendering, window/input, and audio remain owned by `qf-client`.
 
 ## Movement
-- `simulation::pmove` ports `gs_pmove.cpp` (ground/air accel, friction, strafe/bunny, jump, dash, wall jump, crouch slide, water, ladders, step/slide collision, landing); fixed 125 Hz; trigger touching and delta angles are not ported.
+- `simulation::pmove` ports `gs_pmove.cpp` (ground/air accel, friction, strafe/bunny, jump, dash, wall jump, crouch slide, water, ladders, step/slide collision, landing); fixed 125 Hz; the touch hook (`pmove_with_touch`/`PmoveTouch`) runs triggers after the move and refreshes delta angles, as `gs_pmove.cpp` does.
 - `tests/pmove_traces.rs` replays `tests/fixtures/pmove_125hz.csv` (legacy harness recording): 9/9 scenarios pass, exact invariants equal, trajectories within 0.05 (max 0.0326).
 - `tests/pmove_bsp.rs` walks on BSP brush collision, kept separate so collision issues are not blamed on movement.
-- Gaps: only the 125 Hz recording, no slope/step/crouch-slide fixtures, patch and submodel collision missing.
+- Gaps: only the 125 Hz recording, no slope/step/crouch-slide fixtures, patch collision missing.
+
+## Map entities (`simulation::entities`)
+- `MapEntities::spawn(&[Entity], &impl BrushModels)` builds triggers from the entity lump (plain Vec behind an engine-owned interface; no `bevy_ecs` dependency yet). `ModeSimulation::set_entities` + `advance_frame_with_entities` run them inside the fixed 125 Hz walking tick (level time = tick * 8 ms); `drain_trigger_events` reports `JumpPad`, `Teleport`, `Hurt`.
+- Supported: `trigger_push` (jump pads via `target`, or angle/speed push, push-once, wait), `trigger_teleport` (horizontal speed kept along destination forward, angles and delta angles set, PMF_TIME_TELEPORT), `trigger_hurt` (damage events: dmg, wait, spawnflags), with `target_position`, `info_notnull`, `target_push`, `misc_teleporter_dest`, `info_teleport_destination` (+16 z) as targets/destinations.
+- wbomb1 uses 2 `trigger_push` + 44 `target_position`; both pads spawn. Other wbomb1 classnames (target_location 78, target_explosion 32, spawns, items, func_explosive 3, trigger_capture_area 2, CTF flags...) are not simulated and are listed by `unsupported_classnames()`.
+- Not supported: trigger_multiple/once/relay/counter/always/key/elevator, trigger_gravity (no effect on players in legacy pmove), target_teleporter/relay/delay/kill/speaker/explosion/location, all `func_*`, items, health/damage application, telefrag (KillBox), rotated submodels, patch collision.
+- Deviations: `G_PickTarget` picks randomly among same-named targets; this port picks the first. A pad whose target is not above it is removed (legacy frees it on zero air time).
+- Tests: unit tests in `entities.rs`, `tests/map_entities.rs` (frame-grouping independence of the jump pad launch, teleport via `ModeSimulation`, real wbomb1 lump).

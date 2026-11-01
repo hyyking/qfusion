@@ -293,6 +293,7 @@ fn event_name(event: PmEvent) -> &'static str {
         PmEvent::WallJumpFailed => "WALLJUMP_FAILED",
         PmEvent::DoubleJump => "DOUBLEJUMP",
         PmEvent::Jump => "JUMP",
+        PmEvent::JumpPad => "JUMP_PAD",
         PmEvent::Fall => "FALL",
     }
 }

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use hud::HudElement;
 use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
 use qf_engine::simulation::bsp_world::BspWorld;
+use qf_engine::simulation::entities::MapEntities;
 use qf_engine::simulation::player::NoclipPlayer;
 use qf_engine::simulation::walk::{ModeSimulation, WalkCommand};
 use winit::application::ApplicationHandler;
@@ -61,6 +62,19 @@ struct App {
 impl App {
     fn new(bsp: Bsp, world_mesh: WorldMesh, player: NoclipPlayer, sensitivity: f32) -> Self {
         let mut simulation = ModeSimulation::new(player);
+        let entities = MapEntities::spawn(&bsp.parsed_entities, &bsp);
+        for warning in entities.warnings() {
+            eprintln!(
+                "entity {} ({}): {}",
+                warning.entity, warning.classname, warning.reason
+            );
+        }
+        println!(
+            "map entities: {} triggers simulated, {} classnames unsupported",
+            entities.trigger_count(),
+            entities.unsupported_classnames().len()
+        );
+        simulation.set_entities(entities);
         simulation.toggle_mode();
         let audio = match audio::AudioOut::new() {
             Ok(a) => Some(a),
@@ -269,10 +283,18 @@ impl ApplicationHandler for App {
                 };
                 self.view_angles = view_angles;
                 let world = BspWorld::new(&self.bsp);
-                if let Err(error) = self.simulation.advance_frame(&world, elapsed, command) {
+                if let Err(error) = self
+                    .simulation
+                    .advance_frame_with_entities(&world, &self.bsp, elapsed, command)
+                {
                     eprintln!("player simulation failed: {error}");
                     event_loop.exit();
                     return;
+                }
+                // Teleporters rewrite the look direction.
+                self.view_angles = self.simulation.mode().view().1;
+                for event in self.simulation.drain_trigger_events() {
+                    println!("trigger: {event:?}");
                 }
                 if let Some(r) = &mut self.renderer {
                     let (eye, _) = self.simulation.mode().view();

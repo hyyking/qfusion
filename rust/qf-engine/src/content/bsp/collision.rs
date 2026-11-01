@@ -188,6 +188,62 @@ impl Bsp {
         Ok(result)
     }
 
+    /// Tests whether an absolute-coordinate box touches an inline brush model.
+    ///
+    /// Mirrors the legacy `GClip_EntityContact` for brush models: a zero-length
+    /// box trace against the model's brushes translated by `origin`, where
+    /// "start solid" means overlap (touching faces count). Rotated models and
+    /// patch faces are not supported. Model 0 is the world and is rejected.
+    pub fn box_touches_model(
+        &self,
+        model: usize,
+        origin: [f32; 3],
+        mins: [f32; 3],
+        maxs: [f32; 3],
+        contents_mask: u32,
+    ) -> Result<bool, TraceError> {
+        if origin
+            .iter()
+            .chain(mins.iter())
+            .chain(maxs.iter())
+            .any(|x| !x.is_finite())
+        {
+            return Err(TraceError::NonFiniteInput);
+        }
+        if (0..3).any(|axis| mins[axis] > maxs[axis]) {
+            return Err(TraceError::InvertedBounds);
+        }
+        let Some(model) = self.models.get(model).filter(|_| model != 0) else {
+            return Ok(false);
+        };
+        let (first, count) = (model.first_brush as usize, model.num_brushes as usize);
+        let Some(brushes) = self.brushes.get(first..first + count) else {
+            return Ok(false);
+        };
+
+        let local = [-origin[0], -origin[1], -origin[2]];
+        for brush in brushes {
+            if brush.contents as u32 & contents_mask == 0 {
+                continue;
+            }
+            let mut trace = Trace {
+                fraction: 1.0,
+                end_position: local,
+                plane: None,
+                contents: 0,
+                surface_flags: 0,
+                shader: None,
+                start_solid: false,
+                all_solid: false,
+            };
+            self.clip_brush(brush, local, local, mins, maxs, &mut trace);
+            if trace.start_solid {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn clip_brush(
         &self,
         brush: &Brush,
