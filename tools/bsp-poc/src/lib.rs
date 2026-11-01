@@ -1,7 +1,7 @@
 //! Bounded BSP reader for Warsow/qfusion maps.
 //!
 //! Layouts follow `source/common/facilities/qfiles.h`. Supported: `FBSP` v1
-//! (qfusion, 18 lumps; what `wbomb1` uses) and `IBSP` v46/47 (16 lumps).
+//! (qfusion, 18 lumps; what `wbomb1` uses) and `IBSP` v46/47 (17 lumps).
 //! `RBSP` is recognised but its layout is not decoded.
 
 use std::fmt;
@@ -50,7 +50,7 @@ impl std::error::Error for BspError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    /// "IBSP" (Quake 3 / RTCW), 16 lumps.
+    /// "IBSP" (Quake 3 / RTCW), 17 lumps.
     Ibsp,
     /// "FBSP" (qfusion), 18 lumps, 4 lightmap styles per face/vertex.
     Fbsp,
@@ -159,7 +159,7 @@ impl Bsp {
         let magic_s = String::from_utf8_lossy(&magic).into_owned();
         let (format, nlumps) = match (&magic, version) {
             (b"FBSP", 1) => (Format::Fbsp, 18),
-            (b"IBSP", 46 | 47) => (Format::Ibsp, 16),
+            (b"IBSP", 46 | 47) => (Format::Ibsp, 17),
             (b"RBSP", _) => return Err(BspError::UnsupportedLayout("RBSP layout is not decoded".into())),
             (b"FBSP" | b"IBSP", v) => {
                 return Err(BspError::UnsupportedVersion { magic: magic_s, version: v })
@@ -303,6 +303,11 @@ impl Bsp {
             if matches!(f.facetype, FACETYPE_PLANAR | FACETYPE_TRISURF | FACETYPE_PATCH) {
                 check_range("face verts", f.first_vert, f.num_verts, self.vertices.len())?;
                 check_range("face elements", f.first_elem, f.num_elems, self.elements.len())?;
+            }
+            if matches!(f.facetype, FACETYPE_PLANAR | FACETYPE_TRISURF) && f.num_elems % 3 != 0 {
+                return Err(BspError::IndexOutOfRange {
+                    what: "face elements (not a multiple of 3)".into(), index: f.num_elems as i64, limit: 3,
+                });
             }
             if matches!(f.facetype, FACETYPE_PLANAR | FACETYPE_TRISURF) {
                 let s = f.first_elem as usize;

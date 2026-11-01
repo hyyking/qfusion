@@ -110,6 +110,10 @@ fn rejects_bad_lumps_and_indices() {
     assert!(matches!(Bsp::parse(&d), Err(BspError::LumpOutOfBounds { .. })));
     let mut d = synthetic_fbsp();
     let off = i32::from_le_bytes(d[8 + 8 * 13..8 + 8 * 13 + 4].try_into().unwrap()) as usize;
+    d[off + 24..off + 28].copy_from_slice(&le(5)); // numelems not a multiple of 3
+    assert!(matches!(Bsp::parse(&d), Err(BspError::IndexOutOfRange { .. })));
+    let mut d = synthetic_fbsp();
+    let off =  i32::from_le_bytes(d[8 + 8 * 13..8 + 8 * 13 + 4].try_into().unwrap()) as usize;
     d[off + 16..off + 20].copy_from_slice(&le(1000)); // face numverts
     assert!(matches!(Bsp::parse(&d), Err(BspError::IndexOutOfRange { .. })));
 }

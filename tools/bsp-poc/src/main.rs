@@ -16,8 +16,8 @@ fn run() -> Result<(), String> {
     let (mut entry, mut obj) = (None, None);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--entry" => entry = args.next(),
-            "--obj" => obj = args.next(),
+            "--entry" => entry = Some(args.next().ok_or("--entry requires a value")?),
+            "--obj" => obj = Some(args.next().ok_or("--obj requires a value")?),
             _ => return Err(format!("unknown argument {a}")),
         }
     }
