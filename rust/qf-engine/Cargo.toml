@@ -5,4 +5,5 @@ edition = "2024"
 description = "GPU- and window-independent qfusion engine components"
 
 [dependencies]
+bevy_ecs = { version = "0.20.1", default-features = false, features = ["std"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
