@@ -1,7 +1,7 @@
-# wbomb1 BSP reader POC - Summary
+# qfusion engine crate - Summary
 
 ## Goal
-Verify that the existing Warsow/qfusion `wbomb1` map can be read directly, and decode enough world geometry to produce verifiable output. Independent of the window, audio and networking POCs.
+The GPU- and window-independent engine crate reads Warsow/qfusion BSP/PK3 content, parses entities, exposes collision traces, and contains fixed-step noclip player simulation.
 
 ## Asset
 - Not present in the checkout or submodules.
@@ -11,9 +11,8 @@ Verify that the existing Warsow/qfusion `wbomb1` map can be read directly, and d
 
 ## Commands
 ```
-cd tools/bsp-poc
-cargo test
-cargo run --release -- "<basewsw>\map_wbomb1.pk3" --entry maps/wbomb1.bsp --obj out.obj
+cargo test -p qf-engine
+cargo run -p qf-engine --release --bin bsp-inspect -- "<basewsw>\map_wbomb1.pk3" --entry maps/wbomb1.bsp --obj out.obj
 ```
 The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.1\basewsw`) and skips with a message if the map is missing.
 
@@ -47,8 +46,9 @@ The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.
 - Not a content pipeline or renderer; no other maps were tested.
 - The reference-map test checks tree traversal against the all-leaf reference scan; a separately captured legacy-engine trace fixture for wbomb1 is not yet available.
 
-## Interface for the future engine
+## Engine interfaces
 - `Bsp::parse(&[u8])` returns typed lumps, parsed entities, collision structures, and a `diagnostics` list.
 - `Bsp::model_mesh(i)` returns `WorldMesh` (positions, normals, uvs, indices, shader index per triangle).
 - `Bsp::trace(start, end, mins, maxs, contents_mask)` returns a brush-only point/box trace, independent of GPU or movement code.
-- Next steps: patch collision/tessellation, vis and lighting; capture live legacy collision traces for wbomb1.
+- Player simulation is exposed through `simulation::player`; it uses parsed BSP entities for spawn selection without depending on window or GPU types.
+- Rendering, window/input, and audio remain owned by `qf-client`.

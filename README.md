@@ -25,6 +25,46 @@ These are candidate building blocks for the port, not a finalized dependency man
 
 Treat deterministic movement as an explicit cross-platform test requirement; a fixed 125 Hz tick or a particular math/collision crate does not guarantee determinism by itself. See `ENGINE_PORT.md` for the port scope, performance targets, and validation strategy.
 
+### Rust engine and client workspace
+
+The early Rust prototype is organized as a Cargo workspace with two crates:
+
+- `rust/qf-engine` is a GPU- and window-independent library for BSP/PK3 content,
+  collision, parsed map entities, and fixed-step player simulation.
+- `rust/qf-client` is the desktop binary. It owns `winit` window/input,
+  `wgpu` rendering, and `cpal` audio, and consumes engine data through the
+  library interfaces.
+
+From the repository root, build and run the client with an installed Rust
+toolchain and a GPU driver supported by `wgpu`:
+
+```
+cargo run -p qf-client -- "C:\Program Files (x86)\Warsow 2.1\basewsw\map_wbomb1.pk3"
+```
+
+The client also accepts a `.bsp` file directly. For a PK3, `--entry` selects
+the BSP path and defaults to `maps/wbomb1.bsp`. Use **WASD** to move, **R/F**
+to rise/fall, the **arrow keys** to look, **B** to play the test beep, and
+**Esc** to quit. The engine's BSP inspection utility can be run with
+`cargo run -p qf-engine --bin bsp-inspect -- <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--obj out.obj]`.
+For PK3 input, pass `--entry`; the client defaults this option to
+`maps/wbomb1.bsp`.
+
+Workspace checks from the repository root:
+
+```
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets
+cargo build --workspace
+```
+
+On Linux, CPAL requires ALSA development headers (for example,
+`libasound2-dev`), and Winit requires the platform's X11 or Wayland development
+libraries. Tests do not require a GPU or audio device. The client preserves
+the prototype's map-preview and noclip controls; this remains a structural
+slice rather than a complete engine port.
+
 ## License (GPLv2)
 
 This program is free software; you can redistribute it and/or

@@ -11,15 +11,15 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bsp_poc::{Bsp, WorldMesh, read_pk3_entry};
-use qf_game_poc::{FixedStepSimulation, NoclipPlayer, PlayerCommand};
+use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
+use qf_engine::simulation::player::{FixedStepSimulation, NoclipPlayer, PlayerCommand};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-const USAGE: &str = "usage: qf-platform-poc <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp]";
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp]";
 
 struct App {
     window: Option<Arc<Window>>,

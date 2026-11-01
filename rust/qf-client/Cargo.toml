@@ -1,13 +1,10 @@
 [package]
-name = "qf-platform-poc"
+name = "qf-client"
 version = "0.1.0"
 edition = "2024"
 
-[workspace]
-
 [dependencies]
-bsp-poc = { path = "../../tools/bsp-poc" }
-qf-game-poc = { path = "../qf-game-poc" }
+qf-engine = { path = "../qf-engine" }
 bytemuck = { version = "1.25.2", features = ["derive"] }
 cpal = "0.18.2"
 pollster = "1.0.1"

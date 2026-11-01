@@ -1,4 +1,4 @@
-use crate::{Brush, Bsp, Plane};
+use super::{Brush, Bsp, Plane};
 
 const DIST_EPSILON: f32 = 1.0 / 32.0;
 
@@ -347,7 +347,7 @@ mod tests {
             );
             return;
         }
-        let data = crate::read_pk3_entry(&pk3, "maps/wbomb1.bsp").unwrap();
+        let data = super::super::read_pk3_entry(&pk3, "maps/wbomb1.bsp").unwrap();
         let bsp = Bsp::parse(&data).unwrap();
         let model = &bsp.models[0];
         let center: [f32; 3] =
@@ -376,11 +376,12 @@ mod tests {
             let tree = bsp.trace(start, end, mins, maxs, 1).unwrap();
             let scan = trace_all_leaf_brushes(&bsp, start, end, mins, maxs, 1);
             assert!((tree.fraction - scan.fraction).abs() <= 1e-5);
-            assert!(tree
-                .end_position
-                .iter()
-                .zip(scan.end_position)
-                .all(|(a, b)| (a - b).abs() <= 0.05));
+            assert!(
+                tree.end_position
+                    .iter()
+                    .zip(scan.end_position)
+                    .all(|(a, b)| (a - b).abs() <= 0.05)
+            );
             assert_eq!(
                 (tree.start_solid, tree.all_solid),
                 (scan.start_solid, scan.all_solid)

@@ -1,0 +1,8 @@
+[package]
+name = "qf-engine"
+version = "0.1.0"
+edition = "2024"
+description = "GPU- and window-independent qfusion engine components"
+
+[dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
