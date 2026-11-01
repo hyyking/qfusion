@@ -36,7 +36,7 @@ The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.
 - Bezier patch faces (220 in wbomb1) are not tessellated; 180 faces are skipped from the world mesh.
 - Flare and foliage faces are skipped (none in wbomb1).
 - Patch-face collision is not implemented; trace comparisons must avoid patch-only collision surfaces. This is relevant to the 220 Bezier patch faces in wbomb1.
-- Inline submodel collision is not exposed; `Bsp::trace` tests world model 0 only.
+- `Bsp::trace` tests world model 0 only; inline submodels are only exposed as `Bsp::box_touches_model` (zero-length box contact for trigger volumes, unrotated, no patches).
 - Fog records are size-checked but not decoded.
 - Lighting, lightgrid, visibility and lightarray are kept as offset/length only.
 - No shader/texture resolution, lightmaps or rendering; parsed entity properties supplement and do not replace the original raw entity string.
@@ -54,7 +54,17 @@ The smoke test reads `WARSOW_BASEWSW` (default `C:\Program Files (x86)\Warsow 2.
 - Rendering, window/input, and audio remain owned by `qf-client`.
 
 ## Movement
-- `simulation::pmove` ports `gs_pmove.cpp` (ground/air accel, friction, strafe/bunny, jump, dash, wall jump, crouch slide, water, ladders, step/slide collision, landing); fixed 125 Hz; trigger touching and delta angles are not ported.
+- `simulation::pmove` ports `gs_pmove.cpp` (ground/air accel, friction, strafe/bunny, jump, dash, wall jump, crouch slide, water, ladders, step/slide collision, landing); fixed 125 Hz; the touch hook (`pmove_with_touch`/`PmoveTouch`) runs triggers after the move and refreshes delta angles, as `gs_pmove.cpp` does.
 - `tests/pmove_traces.rs` replays `tests/fixtures/pmove_125hz.csv` (legacy harness recording): 9/9 scenarios pass, exact invariants equal, trajectories within 0.05 (max 0.0326).
 - `tests/pmove_bsp.rs` walks on BSP brush collision, kept separate so collision issues are not blamed on movement.
-- Gaps: only the 125 Hz recording, no slope/step/crouch-slide fixtures, patch and submodel collision missing.
+- Gaps: only the 125 Hz recording, no slope/step/crouch-slide fixtures, patch collision missing.
+
+## Map entities (`simulation::entities`)
+- Every lump entity is an entity of a private `bevy_ecs` world inside `MapEntities` (components/resources/systems in `entities/{components,spawn,logic,parse}.rs`); no Bevy type is public. `MapEntities::spawn` / `spawn_for_gametype(&[Entity], &impl BrushModels, &Gametype)` instantiate it; `ModeSimulation::set_entities` + `advance_frame_with_entities` run it in the fixed 125 Hz walking tick (level time = tick * 8 ms), `think` runs on non-walking ticks. `drain_trigger_events` reports `JumpPad`, `Teleport`, `Hurt`, `Used`, `Message`, `Kill`, `Telefrag`.
+- Spawn filtering follows `G_CanSpawnEntity`: `notfree`, `notduel`, `notteam`, `gametype`, `not_gametype` (plain `spawn` = free for all; `Gametype::bomb()` is team based). `info_null`/`info_camp` are freed at spawn.
+- Supported touch entities: `trigger_push` (jump pad via `target`, or angle/speed push, push-once, wait), `trigger_teleport` (+SPECTATOR flag, wait; horizontal speed kept, angles/delta angles, PMF_TIME_TELEPORT, then KillBox), `trigger_hurt` (dmg, wait, START_OFF/TOGGLE/NO_PROTECTION/SLOW/KILL/FALL), `trigger_multiple`/`trigger_once` (wait, NOT_PLAYER, TRIGGERED), `trigger_counter` (count, NOMESSAGE), `trigger_always`, `trigger_relay`.
+- Supported actions fired through `target`/`killtarget`/`delay`/`message`: `target_relay`, `target_delay`, `target_kill`, `target_print`, `target_teleporter` (+telefrag), `func_killbox`. Passive: `target_position`, `info_notnull`, `target_push`, `misc_teleporter_dest`, `info_teleport_destination` (+16 z), `trigger_gravity` (legacy only sets `edict_t::gravity`; pmove never reads it).
+- Telefrag: `KillBox` hits the occupants given by `set_occupants` (strict box overlap) and reports `Telefrag`; `func_killbox` also reports the local player.
+- Official-map survey (38 maps, `all_official_maps_spawn_without_warnings`): every map spawns with no warnings. Still unsupported by count: `target_location` 1149 (HUD-only), spawns (`info_player_*`/`team_ctf_*spawn`, handled by `simulation::player` for dm/start only), items/weapons/ammo, `func_door` 56 (9 maps), `target_explosion` 51 (2 maps, radial knockback), `misc_capture_area_indicator` 45, `trigger_capture_area` 21, `func_rotating` 10, `func_button`/`func_plat` 7 each, `func_door_rotating` 4, `func_explosive` 4, `target_speaker` 6, `misc_portal_*`/skyportals, race timers (`target_starttimer/stoptimer/checkpoint`), `target_give`.
+- Deviations: first-match target instead of `G_PickTarget` random pick; `target_delay` ignores `random`; `trigger_relay` RANDOM flag is not ported (the legacy implementation recurses); jump pads whose target is not above them are removed; thinks run at the start of the tick's touch pass; `target_kill`/`target_teleporter` act only while the player is present; no health/damage application; no world-solid early-out in `KillBox`; rotated submodels and patch collision unsupported.
+- Tests: unit tests in `entities/tests.rs` (formula, chains, counter, delay, always, killtarget, telefrag, gametype filter, ledger/classname consistency, determinism), `tests/map_entities.rs` (frame-grouping independence, teleport via `ModeSimulation`, wbomb1 and all-official-maps spawn).

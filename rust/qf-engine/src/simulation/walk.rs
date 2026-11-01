@@ -1,8 +1,10 @@
 use std::time::Duration;
 
+use super::entities::{BrushModels, MapEntities, TriggerEvent};
 use super::player::{NoclipPlayer, PlayerCommand, StepError, TICK_DURATION};
 use super::pmove::{
-    BUTTON_SPECIAL, PmType, PmoveCommand, PmoveRules, PmoveState, PmoveWorld, angle_to_short, pmove,
+    BUTTON_SPECIAL, PmType, PmoveCommand, PmoveRules, PmoveState, PmoveTouch, PmoveWorld,
+    angle_to_short, pmove, pmove_with_touch,
 };
 
 pub const MOVE_AXIS: f32 = 127.0;
@@ -59,6 +61,16 @@ impl WalkPlayer {
         world: &W,
         command: WalkCommand,
     ) -> Result<(), StepError> {
+        self.step_with_touch(world, command, None)
+    }
+
+    /// `step` that also lets map triggers act on the player during the move.
+    pub fn step_with_touch<W: PmoveWorld>(
+        &mut self,
+        world: &W,
+        command: WalkCommand,
+        touch: Option<&mut dyn PmoveTouch>,
+    ) -> Result<(), StepError> {
         let values = [command.forward, command.right, command.up]
             .into_iter()
             .chain(command.view_angles);
@@ -84,7 +96,14 @@ impl WalkPlayer {
             angles,
         };
         self.state.pm_type = PmType::Normal;
-        pmove(world, &self.rules, &mut self.state, &pm_command);
+        match touch {
+            Some(touch) => {
+                pmove_with_touch(world, &self.rules, &mut self.state, &pm_command, touch);
+            }
+            None => {
+                pmove(world, &self.rules, &mut self.state, &pm_command);
+            }
+        }
         Ok(())
     }
 }
@@ -128,7 +147,12 @@ impl MovementMode {
         }
     }
 
-    fn step<W: PmoveWorld>(&mut self, world: &W, command: WalkCommand) -> Result<(), StepError> {
+    fn step<W: PmoveWorld>(
+        &mut self,
+        world: &W,
+        command: WalkCommand,
+        touch: Option<&mut dyn PmoveTouch>,
+    ) -> Result<(), StepError> {
         match self {
             Self::Noclip(player) => player.step(PlayerCommand {
                 forward: command.forward,
@@ -136,16 +160,19 @@ impl MovementMode {
                 up: command.up,
                 view_angles: command.view_angles,
             }),
-            Self::Walk(player) => player.step(world, command),
+            Self::Walk(player) => player.step_with_touch(world, command, touch),
         }
     }
 }
 
-/// Fixed 125 Hz accumulator over either movement mode.
-#[derive(Clone, Debug)]
+/// Fixed 125 Hz accumulator over either movement mode, with optional map entities.
+#[derive(Debug)]
 pub struct ModeSimulation {
     mode: MovementMode,
     remainder: Duration,
+    entities: Option<MapEntities>,
+    ticks: i64,
+    trigger_events: Vec<TriggerEvent>,
 }
 
 impl ModeSimulation {
@@ -153,7 +180,29 @@ impl ModeSimulation {
         Self {
             mode: MovementMode::Noclip(player),
             remainder: Duration::ZERO,
+            entities: None,
+            ticks: 0,
+            trigger_events: Vec::new(),
         }
+    }
+
+    /// Installs the map entities that act on the walking player.
+    pub fn set_entities(&mut self, entities: MapEntities) {
+        self.entities = Some(entities);
+    }
+
+    pub fn entities(&self) -> Option<&MapEntities> {
+        self.entities.as_ref()
+    }
+
+    /// For supplying telefrag occupants or activating entities between ticks.
+    pub fn entities_mut(&mut self) -> Option<&mut MapEntities> {
+        self.entities.as_mut()
+    }
+
+    /// Takes the trigger events produced by walking ticks since the last call.
+    pub fn drain_trigger_events(&mut self) -> Vec<TriggerEvent> {
+        std::mem::take(&mut self.trigger_events)
     }
 
     pub fn mode(&self) -> &MovementMode {
@@ -170,6 +219,27 @@ impl ModeSimulation {
         elapsed: Duration,
         command: WalkCommand,
     ) -> Result<usize, StepError> {
+        self.advance(world, None::<&NoModels>, elapsed, command)
+    }
+
+    /// `advance_frame` with map triggers evaluated against `models` each tick.
+    pub fn advance_frame_with_entities<W: PmoveWorld, M: BrushModels>(
+        &mut self,
+        world: &W,
+        models: &M,
+        elapsed: Duration,
+        command: WalkCommand,
+    ) -> Result<usize, StepError> {
+        self.advance(world, Some(models), elapsed, command)
+    }
+
+    fn advance<W: PmoveWorld, M: BrushModels>(
+        &mut self,
+        world: &W,
+        models: Option<&M>,
+        elapsed: Duration,
+        command: WalkCommand,
+    ) -> Result<usize, StepError> {
         let accumulated = self
             .remainder
             .checked_add(elapsed)
@@ -177,10 +247,52 @@ impl ModeSimulation {
         let ticks = accumulated.as_nanos() / TICK_DURATION.as_nanos();
         let tick_count = usize::try_from(ticks).map_err(|_| StepError::TooManyTicks)?;
         for _ in 0..tick_count {
-            self.mode.step(world, command)?;
+            self.ticks += 1;
+            let time_ms = self.ticks * TICK_DURATION.as_millis() as i64;
+            match (&mut self.entities, models) {
+                (Some(entities), Some(models)) if self.mode.is_walking() => {
+                    let mut touch = entities.player_touch(models, time_ms);
+                    self.mode.step(world, command, Some(&mut touch))?;
+                    let events = entities.drain_events();
+                    if let MovementMode::Walk(player) = &mut self.mode
+                        && events
+                            .iter()
+                            .any(|event| matches!(event, TriggerEvent::Teleport { .. }))
+                    {
+                        let angles = player.state.view_angles;
+                        player.view_angles = [-angles[0], angles[1], angles[2]];
+                    }
+                    self.trigger_events.extend(events);
+                }
+                _ => {
+                    self.mode.step(world, command, None)?;
+                    if let Some(entities) = &mut self.entities {
+                        entities.think(time_ms);
+                        self.trigger_events.extend(entities.drain_events());
+                    }
+                }
+            }
         }
         self.remainder =
             Duration::from_nanos((accumulated.as_nanos() % TICK_DURATION.as_nanos()) as u64);
         Ok(tick_count)
+    }
+}
+
+/// Placeholder `BrushModels` for ticks without entities.
+struct NoModels;
+
+impl BrushModels for NoModels {
+    fn model_bounds(&self, _model: usize) -> Option<([f32; 3], [f32; 3])> {
+        None
+    }
+    fn box_touches_model(
+        &self,
+        _model: usize,
+        _origin: [f32; 3],
+        _mins: [f32; 3],
+        _maxs: [f32; 3],
+    ) -> bool {
+        false
     }
 }

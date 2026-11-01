@@ -9,7 +9,7 @@
 //! `double` promotions (`M_PI`, `0.001`, `SLIDEMOVE_PLANEINTERACT_EPSILON`),
 //! because the ordering of branches and the exact event/flag transitions are
 //! compared against recorded legacy traces. Trigger touching and entity
-//! interaction are game-side concerns and are not part of this module.
+//! interaction are game-side concerns: they plug in through [`PmoveTouch`].
 
 use super::directions::dir_to_byte;
 
@@ -148,6 +148,7 @@ pub enum PmEvent {
     WallJumpFailed = 11,
     DoubleJump = 12,
     Jump = 13,
+    JumpPad = 14,
     Fall = 15,
 }
 
@@ -403,6 +404,26 @@ fn is_walkable(normal: Vec3) -> bool {
     f64::from(normal[2]) >= 0.7
 }
 
+/// Pose of the player before the current command, for swept trigger touching.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TouchContext {
+    pub previous_origin: Vec3,
+    pub previous_velocity: Vec3,
+    /// Pitch/yaw/roll in the legacy convention (pitch positive downward).
+    pub command_angles: [i16; 3],
+}
+
+/// Game-side trigger touching, called where the legacy `PMoveTouchTriggers`
+/// hook runs: after the move completes and before delta angles are refreshed.
+pub trait PmoveTouch {
+    fn touch_triggers(
+        &mut self,
+        state: &mut PmoveState,
+        context: &TouchContext,
+        events: &mut Vec<PredictedEvent>,
+    );
+}
+
 /// Advances one movement command (`Pmove`).
 pub fn pmove<W: PmoveWorld>(
     world: &W,
@@ -410,13 +431,27 @@ pub fn pmove<W: PmoveWorld>(
     state: &mut PmoveState,
     command: &PmoveCommand,
 ) -> PmoveResult {
-    Mover::new(world, rules, state, *command).run()
+    Mover::new(world, rules, state, *command, None).run()
+}
+
+/// `pmove` that also touches triggers and keeps delta angles in sync, as the
+/// legacy game module does.
+pub fn pmove_with_touch<W: PmoveWorld>(
+    world: &W,
+    rules: &PmoveRules,
+    state: &mut PmoveState,
+    command: &PmoveCommand,
+    touch: &mut dyn PmoveTouch,
+) -> PmoveResult {
+    Mover::new(world, rules, state, *command, Some(touch)).run()
 }
 
 struct Mover<'a, W: PmoveWorld> {
     world: &'a W,
     rules: &'a PmoveRules,
     ps: &'a mut PmoveState,
+    touch_hook: Option<&'a mut dyn PmoveTouch>,
+    previous_velocity: Vec3,
     cmd: PmoveCommand,
     contents_mask: u32,
     events: Vec<PredictedEvent>,
@@ -456,11 +491,19 @@ enum CalcPosition {
 }
 
 impl<'a, W: PmoveWorld> Mover<'a, W> {
-    fn new(world: &'a W, rules: &'a PmoveRules, ps: &'a mut PmoveState, cmd: PmoveCommand) -> Self {
+    fn new(
+        world: &'a W,
+        rules: &'a PmoveRules,
+        ps: &'a mut PmoveState,
+        cmd: PmoveCommand,
+        touch_hook: Option<&'a mut dyn PmoveTouch>,
+    ) -> Self {
         Self {
             world,
             rules,
             ps,
+            touch_hook,
+            previous_velocity: [0.0; 3],
             cmd,
             contents_mask: 0,
             events: Vec::new(),
@@ -1699,6 +1742,24 @@ impl<'a, W: PmoveWorld> Mover<'a, W> {
         self.origin = self.ps.origin;
         self.velocity = self.ps.velocity;
         self.previous_origin = self.ps.origin;
+        self.previous_velocity = self.ps.velocity;
+    }
+
+    fn touch_triggers(&mut self) {
+        let Some(hook) = self.touch_hook.as_mut() else {
+            return;
+        };
+        let context = TouchContext {
+            previous_origin: self.previous_origin,
+            previous_velocity: self.previous_velocity,
+            command_angles: self.cmd.angles,
+        };
+        hook.touch_triggers(self.ps, &context, &mut self.events);
+        // Triggers may have turned the view (teleport): refresh delta angles.
+        for i in 0..3 {
+            let view = angle_to_short(self.ps.view_angles[i]) as i16;
+            self.ps.delta_angles[i] = view.wrapping_sub(self.cmd.angles[i]);
+        }
     }
 
     fn end_move(&mut self) {
@@ -1903,6 +1964,7 @@ impl<'a, W: PmoveWorld> Mover<'a, W> {
         self.unstick_position();
         self.categorize_position();
         self.end_move();
+        self.touch_triggers();
 
         // Mirrors the legacy "triggers may force ground off" guard.
         if !self.flag(PMF_ON_GROUND) && self.ground_entity != -1 {
