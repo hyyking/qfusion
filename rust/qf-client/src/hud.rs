@@ -56,7 +56,11 @@ impl Anchor {
             VAnchor::Middle => (screen.height - size[1]) * 0.5 + margin[1],
             VAnchor::Bottom => screen.height - size[1] - margin[1],
         };
-        [x, y]
+        // Keep the box on screen when a saved layout came from a larger window.
+        [
+            x.min(screen.width - size[0]).max(0.0),
+            y.min(screen.height - size[1]).max(0.0),
+        ]
     }
 }
 

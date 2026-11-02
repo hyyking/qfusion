@@ -94,8 +94,13 @@ impl WeaponHud {
         }
         let pixel = Self::PIXEL * layout.scale * screen.scale;
         let name = weapon.def().name.to_uppercase();
+        let free = weapon.def().ammo_per_shot == 0;
         let mut ammo = String::new();
-        let _ = write!(ammo, "{}", snapshot.selected_ammo().unwrap_or(0));
+        if free {
+            ammo.push_str("--");
+        } else {
+            let _ = write!(ammo, "{}", snapshot.selected_ammo().unwrap_or(0));
+        }
         let name_size = text_size(name.chars().count(), pixel * 0.5);
         let ammo_size = text_size(ammo.chars().count(), pixel * 2.0);
         let gap = pixel;
@@ -110,7 +115,7 @@ impl WeaponHud {
             pixel * 0.5,
             [0.8, 0.8, 0.8, 1.0],
         );
-        let low = snapshot.selected_ammo().unwrap_or(0) <= LOW_AMMO;
+        let low = !free && snapshot.selected_ammo().unwrap_or(0) <= LOW_AMMO;
         let default = if low {
             [1.0, 0.25, 0.2, 1.0]
         } else {
@@ -133,13 +138,19 @@ impl WeaponHud {
         if !layout.enabled || snapshot.slots.is_empty() {
             return;
         }
-        let pixel = Self::PIXEL * layout.scale * screen.scale;
+        let mut pixel = Self::PIXEL * layout.scale * screen.scale;
+        let count = snapshot.slots.len() as f32;
+        // Every dimension is linear in `pixel`, so shrink it until the bar fits the window.
+        let unit = Self::bar_size(snapshot.slots.len(), 1.0, 1.0)[0] / Self::PIXEL;
+        let max_width = (screen.width - 8.0).max(1.0);
+        if unit * pixel > max_width {
+            pixel = max_width / unit;
+        }
         let cell_chars = 4;
         let text = text_size(cell_chars, pixel * 0.75);
         let pad = pixel;
         let cell = [text[0] + pad * 2.0, text[1] * 2.0 + pad * 3.0];
         let gap = pad;
-        let count = snapshot.slots.len() as f32;
         let size = [count * cell[0] + (count - 1.0) * gap, cell[1]];
         let [x, y] = layout.anchor.place(screen, size);
         let color = layout.color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
@@ -168,9 +179,14 @@ impl WeaponHud {
                 pixel * 0.75,
                 tint,
             );
-            let low = *ammo <= LOW_AMMO;
+            let free = weapon.def().ammo_per_shot == 0;
+            let low = !free && *ammo <= LOW_AMMO;
             canvas.text(
-                &ammo.to_string(),
+                &if free {
+                    "--".to_string()
+                } else {
+                    ammo.to_string()
+                },
                 [cx + pad, y + pad * 2.0 + text[1]],
                 pixel * 0.75,
                 if low { [1.0, 0.25, 0.2, 1.0] } else { tint },
@@ -245,6 +261,25 @@ mod tests {
         canvas.clear();
         hud.draw(&SCREEN, &mut canvas);
         assert!(canvas.rects.is_empty());
+    }
+
+    #[test]
+    fn full_loadout_fits_a_narrow_window() {
+        let screen = Screen {
+            width: 640.0,
+            height: 400.0,
+            scale: 1.0,
+        };
+        let mut hud = WeaponHud::new();
+        hud.snapshot = Some(WeaponSnapshot {
+            selected: Some(WeaponId::Gunblade),
+            slots: WeaponId::ALL.iter().map(|w| (*w, 10)).collect(),
+        });
+        let mut canvas = Canvas::default();
+        hud.draw(&screen, &mut canvas);
+        for r in &canvas.rects {
+            assert!(r.x >= -0.01 && r.x + r.w <= screen.width + 0.01, "{r:?}");
+        }
     }
 
     #[test]

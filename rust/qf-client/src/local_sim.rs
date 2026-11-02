@@ -47,6 +47,7 @@ impl LocalSim {
             for weapon in WeaponId::ALL {
                 inventory.give_weapon(weapon, weapon.def().ammo_max);
             }
+            inventory.select_best();
         }
         Self {
             sim,
@@ -257,6 +258,39 @@ mod tests {
         let inventory = sim.inventory().expect("local inventory");
         assert_eq!(inventory.owned().count(), WeaponId::ALL.len());
         assert!(inventory.selected().is_some());
+    }
+
+    #[test]
+    fn hud_draws_inside_the_screen_after_a_frame() {
+        use crate::hud::{Canvas, Screen};
+        use crate::weapon_hud::{WeaponHud, WeaponSnapshot};
+        let mut sim = local();
+        let mut input = WeaponInput::default();
+        sim.advance(
+            &Void,
+            &NoModels,
+            TICK_DURATION * 3,
+            WalkCommand::default(),
+            &mut input,
+        )
+        .unwrap();
+        let mut hud = WeaponHud::new();
+        hud.snapshot = sim.inventory().map(WeaponSnapshot::from_inventory);
+        let screen = Screen {
+            width: 1280.0,
+            height: 720.0,
+            scale: 1.0,
+        };
+        let mut canvas = Canvas::default();
+        hud.draw(&screen, &mut canvas);
+        assert!(!canvas.rects.is_empty());
+        for r in &canvas.rects {
+            assert!(r.x >= 0.0 && r.y >= 0.0, "{r:?}");
+            assert!(
+                r.x + r.w <= screen.width && r.y + r.h <= screen.height,
+                "{r:?}"
+            );
+        }
     }
 
     #[test]
