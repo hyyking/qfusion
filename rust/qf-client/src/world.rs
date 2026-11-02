@@ -24,6 +24,58 @@ const SURF_SKIP: i32 = 0x200;
 const MAX_STAGES: usize = 8;
 /// Multiplier applied to lightmap and vertex-lit colours (legacy overbright).
 const LIGHT_SCALE: f32 = 1.0;
+/// Half extent of the skybox cube, inside the far plane.
+const SKY_SIZE: f32 = 4096.0;
+
+/// Skybox faces (image suffix, corners at u0v0, u1v0, u1v1, u0v1) in Quake axes.
+const SKY_FACES: [(&str, [[f32; 3]; 4]); 6] = [
+    (
+        "ft",
+        [[1., 1., 1.], [1., -1., 1.], [1., -1., -1.], [1., 1., -1.]],
+    ),
+    (
+        "bk",
+        [
+            [-1., -1., 1.],
+            [-1., 1., 1.],
+            [-1., 1., -1.],
+            [-1., -1., -1.],
+        ],
+    ),
+    (
+        "lf",
+        [[-1., 1., 1.], [1., 1., 1.], [1., 1., -1.], [-1., 1., -1.]],
+    ),
+    (
+        "rt",
+        [
+            [1., -1., 1.],
+            [-1., -1., 1.],
+            [-1., -1., -1.],
+            [1., -1., -1.],
+        ],
+    ),
+    (
+        "up",
+        [[1., 1., 1.], [-1., 1., 1.], [-1., -1., 1.], [1., -1., 1.]],
+    ),
+    (
+        "dn",
+        [
+            [1., -1., -1.],
+            [-1., -1., -1.],
+            [-1., 1., -1.],
+            [1., 1., -1.],
+        ],
+    ),
+];
+const SKY_UVS: [[f32; 2]; 4] = [[0., 0.], [1., 0.], [1., 1.], [0., 1.]];
+
+struct Sky {
+    shaders: [Option<usize>; 6],
+    vertex_buf: wgpu::Buffer,
+    index_buf: wgpu::Buffer,
+}
 
 /// Game content shared by the world renderer: file system and parsed shader scripts.
 pub struct Content {
@@ -256,6 +308,7 @@ pub struct WorldRenderer {
     mover_vertices: Vec<Vertex>,
     mover_draws: Vec<(usize, u32)>,
     time: f32,
+    sky: Option<Sky>,
 }
 
 struct Builder<'a> {
@@ -424,11 +477,16 @@ impl Builder<'_> {
         if flags & SURF_SKY != 0 || shader.is_sky() {
             return None;
         }
-        if shader.stages.len() > MAX_STAGES {
+        self.build_shader(&shader.stages, shader.is_translucent(), &name)
+    }
+
+    /// Uploads textures and bind groups for `defs`; `None` when there is nothing to draw.
+    fn build_shader(&mut self, defs: &[Stage], translucent: bool, name: &str) -> Option<usize> {
+        if defs.len() > MAX_STAGES {
             eprintln!("shader: '{name}' has more than {MAX_STAGES} stages; extra stages ignored");
         }
         let mut stages = Vec::new();
-        for def in shader.stages.iter().take(MAX_STAGES) {
+        for def in defs.iter().take(MAX_STAGES) {
             let names: Vec<String> = match &def.map {
                 MapSource::Image(n) => vec![n.clone()],
                 MapSource::Anim { frames, .. } => frames.clone(),
@@ -487,10 +545,28 @@ impl Builder<'_> {
             return None;
         }
         self.shaders.push(PreparedShader {
-            translucent: shader.is_translucent(),
+            translucent,
             stages,
         });
         Some(self.shaders.len() - 1)
+    }
+
+    /// First skybox declared by a sky surface of the map, one shader per cube face.
+    fn skybox(&mut self) -> Option<[Option<usize>; 6]> {
+        let far_box = (0..self.bsp.shaders.len()).find_map(|r| {
+            let s = &self.bsp.shaders[r];
+            let shader = self.content.shaders.resolve(&s.name);
+            if s.surface_flags & SURF_SKY == 0 && !shader.is_sky() {
+                return None;
+            }
+            shader.sky.and_then(|p| p.far_box)
+        })?;
+        Some(SKY_FACES.map(|(suffix, ..)| {
+            let mut stage = Stage::new(MapSource::Image(format!("{far_box}_{suffix}")));
+            stage.clamp = true;
+            stage.depth_write = false;
+            self.build_shader(&[stage], false, &far_box)
+        }))
     }
 
     /// Groups the mesh triangles by shader and appends them to `indices`.
@@ -634,9 +710,28 @@ impl WorldRenderer {
                 batches: builder.batch_mesh(mesh, &mut mover_indices),
             });
         }
+        let sky_shaders = builder.skybox();
         let Builder {
             pipelines, shaders, ..
         } = builder;
+        let sky = sky_shaders.map(|shaders| Sky {
+            shaders,
+            vertex_buf: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Skybox vertices"),
+                size: (24 * std::mem::size_of::<Vertex>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            index_buf: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Skybox indices"),
+                contents: bytemuck::cast_slice(
+                    &(0..6u32)
+                        .flat_map(|f| [0, 1, 2, 0, 2, 3].map(|i| f * 4 + i))
+                        .collect::<Vec<_>>(),
+                ),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+        });
 
         let lightmap = lightmap_view(device, queue, bsp, &white);
         let lm_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -715,6 +810,7 @@ impl WorldRenderer {
             mover_vertices: Vec::new(),
             mover_draws: Vec::new(),
             time: 0.0,
+            sky,
         })
     }
 
@@ -759,6 +855,21 @@ impl WorldRenderer {
 
         self.mover_vertices.clear();
         self.mover_draws.clear();
+        if let Some(sky) = &self.sky {
+            let verts: Vec<Vertex> = SKY_FACES
+                .iter()
+                .flat_map(|(_, corners)| {
+                    corners.iter().zip(SKY_UVS).map(|(c, uv)| Vertex {
+                        position: std::array::from_fn(|i| eye[i] + c[i] * SKY_SIZE),
+                        normal: [0.0; 3],
+                        uv,
+                        lm_uv: [-1.0, -1.0],
+                        color: [255; 4],
+                    })
+                })
+                .collect();
+            queue.write_buffer(&sky.vertex_buf, 0, bytemuck::cast_slice(&verts));
+        }
         for pose in movers {
             let Some(idx) = self.movers.iter().position(|m| m.model == pose.model) else {
                 continue;
@@ -808,6 +919,20 @@ impl WorldRenderer {
     /// Draws opaque world, opaque movers, then translucent world and movers.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_bind_group(0, &self.view_bg, &[]);
+        if let Some(sky) = &self.sky {
+            pass.set_vertex_buffer(0, sky.vertex_buf.slice(..));
+            pass.set_index_buffer(sky.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+            for (face, shader) in sky.shaders.iter().enumerate() {
+                if let Some(shader) = shader {
+                    let batch = Batch {
+                        shader: *shader,
+                        first: face as u32 * 6,
+                        count: 6,
+                    };
+                    self.draw_batch(pass, &batch, 0);
+                }
+            }
+        }
         for translucent in [false, true] {
             pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
             pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
