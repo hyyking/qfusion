@@ -133,6 +133,8 @@ pub struct BombHud {
     pub carrying: bool,
     pub bomb: String,
     pub site: String,
+    /// Letter of the bomb site the carrier currently stands in, empty otherwise.
+    pub plant_site: String,
     pub progress: f32,
     pub winner: i64,
 }
@@ -163,6 +165,7 @@ impl BombHud {
             carrying: flag("carrying"),
             bomb: text("bomb"),
             site: text("bomb_site"),
+            plant_site: text("plant_site"),
             progress: match values.get("progress") {
                 Some(Value::Float(v)) => *v as f32,
                 _ => 0.0,
@@ -197,7 +200,11 @@ impl BombHud {
     pub fn bomb_text(&self) -> Option<String> {
         let site = &self.site;
         match self.bomb.as_str() {
-            "carried" if self.carrying => Some("YOU HAVE THE BOMB".into()),
+            "carried" if self.carrying && !self.plant_site.is_empty() => Some(format!(
+                "IN SITE {} - STAND STILL ON THE GROUND TO PLANT",
+                self.plant_site
+            )),
+            "carried" if self.carrying => Some("YOU HAVE THE BOMB - G TO DROP".into()),
             "carried" => Some("BOMB CARRIED".into()),
             "dropping" | "dropped" => Some("BOMB DROPPED".into()),
             "planting" | "planted" => Some(format!("ARMING SITE {site}")),
@@ -321,7 +328,9 @@ mod tests {
         assert_eq!(hud.bomb_text(), None);
         hud.bomb = "carried".into();
         hud.carrying = true;
-        assert_eq!(hud.bomb_text().unwrap(), "YOU HAVE THE BOMB");
+        assert_eq!(hud.bomb_text().unwrap(), "YOU HAVE THE BOMB - G TO DROP");
+        hud.plant_site = "B".into();
+        assert!(hud.bomb_text().unwrap().starts_with("IN SITE B"));
         hud.bomb = "armed".into();
         hud.site = "A".into();
         assert_eq!(hud.bomb_text().unwrap(), "BOMB ARMED SITE A");
