@@ -7,6 +7,7 @@ mod headless;
 mod hud;
 mod hud_editor;
 mod hud_layout;
+mod keybinds;
 mod loadout;
 mod math;
 mod menu;
@@ -73,6 +74,7 @@ struct App {
     sensitivity: f32,
     mouse_grabbed: bool,
     menu: menu::Menu,
+    keybinds: keybinds::Keybinds,
     layout: hud_layout::HudLayout,
     hud_editor: Option<hud_editor::HudEditor>,
     /// Last cursor position in window pixels, for menu hit-testing.
@@ -124,6 +126,16 @@ impl App {
             }
             None => hud_layout::HudLayout::default(),
         };
+        let keybinds = match keybinds::keybinds_path() {
+            Some(path) => {
+                let (binds, warnings) = keybinds::Keybinds::load(&path);
+                for warning in warnings {
+                    eprintln!("keybinds: {warning}");
+                }
+                binds
+            }
+            None => keybinds::Keybinds::default(),
+        };
         let mut hud_ups = hud::UpsCounter::new();
         hud_ups.set_layout(layout.get(hud_layout::UPS));
         let mut hud_fps = hud::FpsCounter::new();
@@ -156,6 +168,7 @@ impl App {
             sensitivity,
             mouse_grabbed: false,
             menu: menu::Menu::pause(),
+            keybinds,
             layout,
             hud_editor: None,
             cursor: [0.0; 2],
@@ -567,33 +580,35 @@ impl ApplicationHandler for App {
                                 self.start_recording(None);
                             }
                         }
-                        Key::Character(ref key) if key.eq_ignore_ascii_case("b") => {
-                            self.play_sound()
-                        }
-                        Key::Character(ref key) if key.eq_ignore_ascii_case("g") => {
-                            if let Some(bomb) = &mut self.bomb {
-                                bomb.command("drop", "");
+                        Key::Character(ref typed) => match self.keybinds.action_for(typed) {
+                            Some(keybinds::Action::SoundTest) => self.play_sound(),
+                            Some(keybinds::Action::DropBomb) => {
+                                if let Some(bomb) = &mut self.bomb {
+                                    bomb.command("drop", "");
+                                }
                             }
-                        }
-                        Key::Character(ref key) if key.eq_ignore_ascii_case("k") => {
-                            if let Some(bomb) = &mut self.bomb {
-                                bomb.command("suicide", "");
+                            Some(keybinds::Action::Suicide) => {
+                                if let Some(bomb) = &mut self.bomb {
+                                    bomb.command("suicide", "");
+                                }
                             }
-                        }
-                        Key::Character(ref key) if key.eq_ignore_ascii_case("l") => {
-                            if let Some(bomb) = &self.bomb {
-                                self.menu = bomb.loadout.menu(loadout::MenuId::Loadout);
-                                self.menu.open();
-                                self.set_mouse_grab(false);
+                            Some(keybinds::Action::LoadoutMenu) => {
+                                if let Some(bomb) = &self.bomb {
+                                    self.menu = bomb.loadout.menu(loadout::MenuId::Loadout);
+                                    self.menu.open();
+                                    self.set_mouse_grab(false);
+                                }
                             }
-                        }
-                        Key::Character(ref key) if key.eq_ignore_ascii_case("m") => {
-                            if let Some(bomb) = &self.bomb {
-                                self.menu = menu::Menu::team(bomb.team_choice());
-                                self.menu.open();
-                                self.set_mouse_grab(false);
+                            Some(keybinds::Action::TeamMenu) => {
+                                if let Some(bomb) = &self.bomb {
+                                    self.menu = menu::Menu::team(bomb.team_choice());
+                                    self.menu.open();
+                                    self.set_mouse_grab(false);
+                                }
                             }
-                        }
+                            Some(keybinds::Action::HudEditor) => self.start_hud_editor(),
+                            None => {}
+                        },
                         _ => {}
                     }
                 }
