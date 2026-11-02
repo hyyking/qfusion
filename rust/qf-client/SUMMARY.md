@@ -20,5 +20,5 @@ By default the client runs the engine's Bomb and Defuse gametype with the player
 
 - The renderer remains a BSP preview with no textures or lightmaps; patches are tessellated.
 - Audio is a generated test beep, not a game mixer.
-- Window resizing is supported; mouse/gamepad input, fullscreen, and DPI behavior are not implemented.
+- Window resizing and borderless fullscreen are supported (`--fullscreen` to start fullscreen, F11 or Alt+Enter to toggle; the surface, HUD and mouse grab follow). Gamepad input and per-monitor DPI handling beyond scale-factor changes are not implemented.
 - Tests do not require a display, GPU, or audio device.
