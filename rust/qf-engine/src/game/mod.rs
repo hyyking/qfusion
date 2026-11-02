@@ -1,6 +1,7 @@
 //! Offline gametype hosting: a map-agnostic engine side plus Rhai-owned rules.
 
 pub mod combat;
+pub mod firing;
 pub mod host;
 pub mod inventory;
 pub mod items;
@@ -10,6 +11,7 @@ pub mod vec;
 pub mod weapons;
 
 pub use combat::{Player, Team};
+pub use firing::{Combatant, PlayerInput, Projectile, WeaponEvent, Weapons};
 pub use host::{GameError, GameEvent, GameHost, GameWorld, OwnedBspWorld, TICK_MS, Value};
 pub use inventory::{Inventory, WeaponState};
 pub use items::{ItemDef, ItemId, ItemKind};
