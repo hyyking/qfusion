@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::entities::{BrushModels, MapEntities, MoverWorld, PushedPlayer, TriggerEvent};
+use super::entities::{BrushModels, MapEntities, TriggerEvent};
 use super::player::{NoclipPlayer, PlayerCommand, StepError, TICK_DURATION};
 use super::pmove::{
     BUTTON_SPECIAL, PmType, PmoveCommand, PmoveResult, PmoveRules, PmoveState, PmoveTouch,
@@ -8,6 +8,8 @@ use super::pmove::{
 };
 
 pub const MOVE_AXIS: f32 = 127.0;
+/// Slot of the local player in the entity world.
+const LOCAL_SLOT: u8 = 0;
 const NOCLIP_EYE_HEIGHT: f32 = 30.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -336,21 +338,18 @@ impl ModeSimulation {
             let time_ms = self.ticks * TICK_DURATION.as_millis() as i64;
             match (&mut self.entities, models) {
                 (Some(entities), Some(models)) if self.mode.is_walking() => {
-                    let solid = MoverWorld::new(world, models, entities.mover_poses());
-                    let mut touch = entities.player_touch(models, time_ms);
-                    let outcome = self.mode.step(&solid, command, Some(&mut touch))?;
-                    if let MovementMode::Walk(player) = &mut self.mode {
-                        entities.player_touched(&player.touched, time_ms);
-                        entities.step_movers(
-                            models,
-                            world,
-                            time_ms,
-                            Some(PushedPlayer {
-                                state: &mut player.state,
-                                ground_entity: player.ground_entity,
-                            }),
-                        );
+                    let MovementMode::Walk(player) = &mut self.mode else {
+                        unreachable!("checked by is_walking");
+                    };
+                    // The local player is slot 0 of the entity world. The mode keeps
+                    // the authoritative copy between ticks, so callers can edit it.
+                    entities.set_player(LOCAL_SLOT, player.clone());
+                    entities.push_input(LOCAL_SLOT, command);
+                    entities.tick_players(world, models, time_ms)?;
+                    if let Some(moved) = entities.player(LOCAL_SLOT) {
+                        *player = moved.clone();
                     }
+                    let outcome = entities.last_outcome(LOCAL_SLOT).cloned();
                     let events = entities.drain_events();
                     Self::log_tick(&mut self.tick_log, &self.mode, outcome, events.len());
                     if let MovementMode::Walk(player) = &mut self.mode

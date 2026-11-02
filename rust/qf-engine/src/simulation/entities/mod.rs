@@ -37,9 +37,11 @@ use crate::content::bsp::{ModelPose, Trace, TracePlane};
 
 const CONTENT_SOLID: u32 = super::pmove::CONTENTS_SOLID;
 
+use super::player::StepError;
 #[cfg(test)]
 use super::pmove::{PMF_ON_GROUND, PMF_TIME_TELEPORT, PmEvent, PmType};
 use super::pmove::{PmoveState, PmoveTouch, PmoveWorld, PredictedEvent, TouchContext, Vec3};
+use super::walk::{TickOutcome, WalkCommand, WalkPlayer};
 
 mod components;
 #[cfg(test)]
@@ -50,6 +52,9 @@ mod logic;
 mod mover_tests;
 mod movers;
 mod parse;
+#[cfg(test)]
+mod player_tests;
+mod players;
 mod schedule;
 mod spawn;
 #[cfg(test)]
@@ -556,7 +561,58 @@ impl MapEntities {
         }
     }
 
-    /// Entities the player touched during a movement command (`touch_entities`
+    /// Adds the player of `slot`, or replaces its movement state and rules.
+    pub fn set_player(&mut self, slot: u8, player: WalkPlayer) {
+        players::spawn(&mut self.world, slot, player);
+    }
+
+    /// Removes the player of `slot`; returns whether there was one.
+    pub fn remove_player(&mut self, slot: u8) -> bool {
+        players::despawn(&mut self.world, slot)
+    }
+
+    /// Queues the usercmd the player of `slot` applies on the next tick.
+    pub fn push_input(&mut self, slot: u8, command: WalkCommand) {
+        if let Some(entity) = players::entity_of(&mut self.world, slot) {
+            self.world.entity_mut(entity).insert(players::Cmd(command));
+        }
+    }
+
+    /// Movement state of the player of `slot`.
+    pub fn player(&mut self, slot: u8) -> Option<&WalkPlayer> {
+        let entity = players::entity_of(&mut self.world, slot)?;
+        self.world.get::<players::Walker>(entity).map(|w| &w.0)
+    }
+
+    /// What the last tick fed to and got back from `pmove` for `slot`.
+    pub fn last_outcome(&mut self, slot: u8) -> Option<&TickOutcome> {
+        let entity = players::entity_of(&mut self.world, slot)?;
+        self.world.get::<players::LastTick>(entity)?.0.as_ref()
+    }
+
+    /// One fixed tick of the schedule for every player entity: usercmd movement with
+    /// trigger touching in slot order, then the movers (carrying the lowest slot).
+    pub fn tick_players(
+        &mut self,
+        collision: &dyn PmoveWorld,
+        models: &dyn BrushModels,
+        time_ms: i64,
+    ) -> Result<(), StepError> {
+        self.world.resource_mut::<Level>().set_time(time_ms);
+        self.world.resource_mut::<components::Player>().0 = None;
+        self.world.resource_mut::<players::Fault>().0 = None;
+        {
+            let mut run = self.world.resource_mut::<schedule::Run>();
+            run.players = true;
+            run.movers = true;
+        }
+        schedule::run(&mut self.world, Some(models), Some(collision));
+        match self.world.resource_mut::<players::Fault>().0.take() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     /// of the pmove result): walking into a solid button presses it.
     pub fn player_touched(&mut self, entities: &[i32], time_ms: i64) {
         for &entity in entities {

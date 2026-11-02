@@ -18,13 +18,14 @@ use crate::simulation::pmove::{PmoveState, PmoveWorld, PredictedEvent, Vec3};
 
 use super::components::{Outbox, Player};
 use super::movers::PushedPlayer;
-use super::{BrushModels, logic, movers};
+use super::{BrushModels, logic, movers, players};
 
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct MapTick;
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 enum Phase {
+    Movement,
     Touch,
     Movers,
     Finish,
@@ -33,6 +34,7 @@ enum Phase {
 /// Work selected for the next run of the schedule.
 #[derive(Resource, Default)]
 pub(super) struct Run {
+    pub players: bool,
     pub thinks: bool,
     pub touch: bool,
     pub movers: bool,
@@ -69,13 +71,13 @@ unsafe impl Send for Borrowed {}
 unsafe impl Sync for Borrowed {}
 
 impl Borrowed {
-    fn models(&self) -> &dyn BrushModels {
+    pub(super) fn models(&self) -> &dyn BrushModels {
         let ptr = self.models.expect("brush models lent for this run");
         // SAFETY: see the type invariant.
         unsafe { ptr.as_ref() }
     }
 
-    fn world(&self) -> &dyn PmoveWorld {
+    pub(super) fn world(&self) -> &dyn PmoveWorld {
         let ptr = self.world.expect("collision world lent for this run");
         // SAFETY: see the type invariant.
         unsafe { ptr.as_ref() }
@@ -131,11 +133,15 @@ pub(super) fn install(world: &mut World) {
     world.init_resource::<TouchFrame>();
     world.init_resource::<MoverFrame>();
     world.init_resource::<Borrowed>();
+    world.init_resource::<players::Fault>();
 
     let mut schedule = Schedule::new(MapTick);
     schedule.set_executor(SingleThreadedExecutor::new());
-    schedule.configure_sets((Phase::Touch, Phase::Movers, Phase::Finish).chain());
+    schedule.configure_sets((Phase::Movement, Phase::Touch, Phase::Movers, Phase::Finish).chain());
     schedule.add_systems((
+        players::movement
+            .run_if(|run: Res<Run>| run.players)
+            .in_set(Phase::Movement),
         (
             thinks.run_if(|run: Res<Run>| run.thinks || run.touch),
             touch_pass.run_if(|run: Res<Run>| run.touch),
@@ -162,8 +168,22 @@ fn touch_pass(world: &mut World) {
 }
 
 fn movers_step(world: &mut World) {
+    if world.resource::<players::Fault>().0.is_some() {
+        return;
+    }
     let time_ms = world.resource::<super::components::Level>().time_ms;
-    let mut frame = std::mem::take(&mut world.resource_mut::<MoverFrame>().player);
+    // Only the lowest slot is carried, pushed and crushed by movers.
+    let lead = if world.resource::<Run>().players {
+        players::in_slot_order(world).first().map(|&(_, e)| e)
+    } else {
+        None
+    };
+    let mut frame = match lead {
+        Some(entity) => world
+            .get::<players::Walker>(entity)
+            .map(|w| (w.0.state, w.0.ground_entity)),
+        None => std::mem::take(&mut world.resource_mut::<MoverFrame>().player),
+    };
     world.resource_scope(|world, borrowed: Mut<Borrowed>| {
         let player = frame.as_mut().map(|(state, ground)| PushedPlayer {
             state,
@@ -171,7 +191,16 @@ fn movers_step(world: &mut World) {
         });
         movers::step(world, borrowed.models(), borrowed.world(), time_ms, player);
     });
-    world.resource_mut::<MoverFrame>().player = frame;
+    match lead {
+        Some(entity) => {
+            if let (Some((state, _)), Some(mut walker)) =
+                (frame, world.get_mut::<players::Walker>(entity))
+            {
+                walker.0.state = state;
+            }
+        }
+        None => world.resource_mut::<MoverFrame>().player = frame,
+    }
 }
 
 fn finish(world: &mut World) {
