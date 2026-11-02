@@ -817,11 +817,18 @@ impl ApplicationHandler for App {
                     println!("trigger: {event:?}");
                 }
                 if let Some(audio) = &mut self.audio {
+                    let mover_poses = self
+                        .simulation
+                        .entities()
+                        .map(|e| e.mover_poses())
+                        .unwrap_or_default();
                     audio.update(
                         eye,
                         self.view_angles[1],
                         &mut self.simulation,
                         &trigger_events,
+                        &mover_poses,
+                        elapsed.as_secs_f32(),
                     );
                 }
                 let pickup_changes = self.pickups.update(eye, elapsed);

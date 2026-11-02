@@ -45,6 +45,14 @@ preloads built-in and map sounds, starts the speakers, and each frame sets the l
 drained pmove events. `B` plays `sounds/menu/ok`. Missing sounds print once to stderr
 (e.g. `sounds/world/tele_out` does not exist in the stock packs; the client registers an opt-in `AudioSystem::add_fallback` of `tele_out` -> `tele_in`, reported once, while the engine default still only reports).
 
+## Mover sounds
+`MoverSounds` (qf-engine `sound.rs`) covers `func_door`, `func_door_rotating` and `func_plat`. The client derives
+start/stop from per-frame `MoverPose` changes (idle for 0.1 s means stopped), so the simulation is untouched. Defaults
+follow `G_AssignMoverSounds`: doors play `sounds/movers/door_start` / `door_stop`, plats loop
+`sounds/movers/elevator_move`; the `noise_start`, `noise_stop` and `noise` keys override them (`silent` disables,
+`default` keeps the default). Sounds are positioned at the brush model center with `ATTN_STATIC`. Known content gap:
+`func_button` plays `sounds/movers/button`, which is absent from the stock packs, so buttons stay silent.
+
 ## Tests
 Unit tests cover decode, attenuation/panning, mixer math and the system. `rust/qf-audio/tests/offline_render.rs`
 renders events through the mixer headlessly against real Warsow content (skipped if the install is absent; set
