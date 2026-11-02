@@ -21,6 +21,9 @@ pub enum UiAction {
     Quit,
     /// Join a team or spectate.
     SetTeam(TeamChoice),
+    OpenMenu(crate::loadout::MenuId),
+    SetPrimary([&'static str; 2]),
+    SetSecondary(&'static str),
     /// A gametype command (for example `primary` / `secondary`).
     Command {
         name: String,
