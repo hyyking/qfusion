@@ -49,6 +49,15 @@ Renders one frame without a window and exits.
 
 `world-audit` also prints the classnames that have no simulated behaviour and the item classnames that `Pickups` does not spawn. On the 38 official maps the client currently spawns only triggers, targets and movers (`MapEntities`); `Pickups` (items, weapons, ammo, powerups) exists in `qf-engine::game` but the client does not instantiate it, and there is no md3/skm model loader, so no item, flag or `misc_*` model is drawn. `item_health` (9) and `ammo_shells` (1) are not legacy classnames either. Other unhandled classnames: `info_player_*` (used by the spawn picker, not simulated), `team_ctf_*`, `trigger_capture_area`, `misc_portal_*`, `misc_particles`, `target_speaker` (audio only), `target_location`, `func_explosive`.
 
+## Entity visual survey (38 official maps)
+
+No `misc_model` or `light*` entities occur; lighting is baked. Visible entity assets are item models, all md3 under
+`models/items/{health,armor,ammo}`, `models/weapons/*/<weapon>.md3` and `models/objects/{flag,capture_area}`
+(`item_quad`, `item_warshell` have no stock model in the packs listed by the survey). Counts: armor shard 177, health
+small/medium/large/mega/ultra 151/147/54/21/13, weapons ~24-71 each (rocketlauncher 71), ammo 16-54 each,
+`team_ctf_*flag` 20, `misc_capture_area_indicator` 45. `content::md3` parses these (`tests/md3_real.rs`).
+Next: render them (static frame 0), then pickup wiring, entity sounds, lightgrid/effect lights.
+
 ## Follow-ups
 
 - Entity and item models (md3/skm) and their skins.
