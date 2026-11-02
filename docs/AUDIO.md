@@ -72,3 +72,8 @@ renders events through the mixer headlessly against real Warsow content (skipped
 - OpenAL extras: HRTF, EFX/reverb, occlusion/sound propagation, doppler, per-source cone.
 - Music/streaming, per-category volume cvars (`v_volumePlayers`, `v_volumeEffects`), sound entities attached to
   moving entities, `s_*` cvar configuration beyond the master volume.
+
+## Effect lights
+
+Bomb explosion events also spawn a render-only dynamic light (warm colour, 0.6 s linear fade, at most 4 brightest lights). It is added to the world lightmap stage and to md3 shading; the sim is untouched. Rocket flight lights need projectiles, which the freeplay client does not have yet. For headless checks use `--shot-light x,y,z` (repeatable) with `--screenshot`.
+

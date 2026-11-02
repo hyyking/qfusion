@@ -17,6 +17,8 @@ use qf_engine::content::shader::{
 use qf_engine::content::vfs::Vfs;
 use qf_engine::simulation::entities::MoverPose;
 
+use crate::dlight::{self, DynamicLight, PackedLights};
+
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 const SURF_SKY: i32 = flags::SURF_SKY as i32;
@@ -100,6 +102,7 @@ struct ViewUniform {
     mvp: [[f32; 4]; 4],
     eye_time: [f32; 4],
     params: [f32; 4],
+    lights: PackedLights,
 }
 
 #[repr(C)]
@@ -851,15 +854,18 @@ impl WorldRenderer {
         eye: [f32; 3],
         time: f32,
         movers: &[MoverPose],
+        lights: &[DynamicLight],
     ) {
         self.time = time;
+        let (lights, light_count) = dlight::pack(lights);
         queue.write_buffer(
             &self.view_buf,
             0,
             bytemuck::bytes_of(&ViewUniform {
                 mvp,
                 eye_time: [eye[0], eye[1], eye[2], time],
-                params: [LIGHT_SCALE, 0.0, 0.0, 0.0],
+                params: [LIGHT_SCALE, light_count as f32, 0.0, 0.0],
+                lights,
             }),
         );
 

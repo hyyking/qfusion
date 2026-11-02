@@ -5,9 +5,23 @@ struct View {
     mvp: mat4x4<f32>,
     // xyz: eye position, w: shader time in seconds.
     eye: vec4<f32>,
-    // x: lightmap/vertex light scale.
+    // x: lightmap/vertex light scale, y: dynamic light count.
     params: vec4<f32>,
+    // Per dynamic light: xyz origin + w radius, then rgb colour.
+    lights: array<vec4<f32>, 8>,
 };
+
+fn dynamic_light(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    for (var i = 0u; i < u32(view.params.y); i++) {
+        let to_light = view.lights[i * 2u].xyz - pos;
+        let dist = length(to_light);
+        let atten = clamp(1.0 - dist / view.lights[i * 2u].w, 0.0, 1.0);
+        let facing = clamp(dot(normalize(normal), to_light / max(dist, 1.0)), 0.0, 1.0);
+        sum += view.lights[i * 2u + 1u].rgb * atten * (0.3 + 0.7 * facing);
+    }
+    return sum;
+}
 
 struct Stage {
     tc0: vec4<f32>,
@@ -45,6 +59,8 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     @location(1) lm_uv: vec2<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) world_pos: vec3<f32>,
+    @location(4) world_normal: vec3<f32>,
 };
 
 const TAU: f32 = 6.2831853;
@@ -81,6 +97,8 @@ fn vs_main(in: VsIn) -> VsOut {
     );
     out.lm_uv = in.lm_uv;
     out.color = in.color;
+    out.world_pos = in.position;
+    out.world_normal = in.normal;
     return out;
 }
 
@@ -99,7 +117,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             if in.lm_uv.x < 0.0 {
                 light = in.color.rgb;
             }
-            base = vec4<f32>(light * view.params.x, 1.0);
+            base = vec4<f32>(
+                light * view.params.x + dynamic_light(in.world_pos, in.world_normal),
+                1.0,
+            );
         }
         default: {}
     }

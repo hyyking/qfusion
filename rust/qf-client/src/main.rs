@@ -3,6 +3,7 @@
 
 mod bomb;
 mod crosshair;
+mod dlight;
 mod game_sound;
 mod headless;
 mod hud;
@@ -42,7 +43,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
-const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen] [--fov 110] [--record FILE] [--screenshot out.png [--shot-eye x,y,z] [--shot-angles p,y,r] [--shot-size WxH]]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
+const EXPLOSION_LIGHT_RADIUS: f32 = 400.0;
+
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen] [--fov 110] [--record FILE] [--screenshot out.png [--shot-eye x,y,z] [--shot-angles p,y,r] [--shot-size WxH] [--shot-light x,y,z]...]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
 
 /// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
 /// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
@@ -57,6 +60,7 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<render::Renderer>,
     audio: Option<game_sound::GameSound>,
+    effects: dlight::EffectLights,
     pickups: pickup_view::PickupView,
     game_dirs: Vec<PathBuf>,
     map_pk3: Option<PathBuf>,
@@ -165,6 +169,7 @@ impl App {
             window: None,
             renderer: None,
             audio: None,
+            effects: dlight::EffectLights::default(),
             pickups: pickup_view::PickupView::new(&bsp.parsed_entities),
             game_dirs,
             map_pk3,
@@ -802,6 +807,9 @@ impl ApplicationHandler for App {
                         }
                     }
                     let explosions = std::mem::take(&mut bomb.explosions);
+                    for &origin in &explosions {
+                        self.effects.explosion(origin, EXPLOSION_LIGHT_RADIUS);
+                    }
                     if let Some(audio) = &mut self.audio {
                         audio.play_explosions(&explosions);
                     }
@@ -883,6 +891,8 @@ impl ApplicationHandler for App {
                         .entities()
                         .map(|e| e.mover_poses())
                         .unwrap_or_default();
+                    self.effects.advance(elapsed.as_secs_f32());
+                    r.set_lights(self.effects.lights());
                     r.render(eye, self.view_angles, &movers, &self.hud_canvas);
                 }
                 if let Some(w) = &self.window {
@@ -918,6 +928,8 @@ struct Screenshot {
     eye: Option<[f32; 3]>,
     angles: Option<[f32; 3]>,
     size: (u32, u32),
+    /// Explosion lights placed for the shot (`--shot-light x,y,z`).
+    lights: Vec<[f32; 3]>,
 }
 
 struct Options {
@@ -991,15 +1003,17 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
                     eye: None,
                     angles: None,
                     size: (1280, 720),
+                    lights: Vec::new(),
                 });
             }
-            "--shot-eye" | "--shot-angles" | "--shot-size" => {
+            "--shot-eye" | "--shot-angles" | "--shot-size" | "--shot-light" => {
                 let shot = screenshot
                     .as_mut()
                     .ok_or_else(|| format!("{arg} must follow --screenshot"))?;
                 match arg.as_str() {
                     "--shot-eye" => shot.eye = Some(parse_triple(args.next(), &arg)?),
                     "--shot-angles" => shot.angles = Some(parse_triple(args.next(), &arg)?),
+                    "--shot-light" => shot.lights.push(parse_triple(args.next(), &arg)?),
                     _ => {
                         shot.size = args
                             .next()
@@ -1117,6 +1131,7 @@ fn take_screenshot(options: &Options, shot: &Screenshot) -> Result<(), Box<dyn s
         shot.angles.unwrap_or(angles),
         shot.size,
         options.fov,
+        &shot.lights,
     )
 }
 

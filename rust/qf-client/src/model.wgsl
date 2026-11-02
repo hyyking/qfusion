@@ -3,6 +3,10 @@
 struct View {
     mvp: mat4x4<f32>,
     eye: vec4<f32>,
+    // x: dynamic light count.
+    light_count: vec4<f32>,
+    // Per dynamic light: xyz origin + w radius, then rgb colour.
+    lights: array<vec4<f32>, 8>,
 };
 
 struct Instance {
@@ -28,21 +32,37 @@ struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) normal: vec3<f32>,
+    @location(2) world_pos: vec3<f32>,
 };
 
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
-    out.pos = view.mvp * (inst.model * vec4<f32>(in.position, 1.0));
+    let world = inst.model * vec4<f32>(in.position, 1.0);
+    out.pos = view.mvp * world;
+    out.world_pos = world.xyz;
     out.uv = in.uv;
     out.normal = (inst.model * vec4<f32>(in.normal, 0.0)).xyz;
     return out;
 }
 
+fn dynamic_light(pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    for (var i = 0u; i < u32(view.light_count.x); i++) {
+        let to_light = view.lights[i * 2u].xyz - pos;
+        let dist = length(to_light);
+        let atten = clamp(1.0 - dist / view.lights[i * 2u].w, 0.0, 1.0);
+        let facing = clamp(dot(normal, to_light / max(dist, 1.0)), 0.0, 1.0);
+        sum += view.lights[i * 2u + 1u].rgb * atten * (0.3 + 0.7 * facing);
+    }
+    return sum;
+}
+
 fn shade(in: VsOut) -> vec4<f32> {
     let texel = textureSample(tex, tex_sampler, in.uv);
-    let facing = max(dot(normalize(in.normal), inst.light_dir.xyz), 0.0);
-    let light = inst.ambient.rgb + inst.diffuse.rgb * facing;
+    let normal = normalize(in.normal);
+    let facing = max(dot(normal, inst.light_dir.xyz), 0.0);
+    let light = inst.ambient.rgb + inst.diffuse.rgb * facing + dynamic_light(in.world_pos, normal);
     return vec4<f32>(texel.rgb * inst.tint.rgb * light, texel.a * inst.tint.a);
 }
 
