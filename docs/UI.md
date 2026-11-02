@@ -35,16 +35,21 @@ All UI lives in `rust/qf-client`; nothing UI-related enters `qf-engine` or the 1
 4. Team join screen.
 5. Bomb loadout screen.
 6. HUD customization screen.
-7. Weapon bar, ammo, current weapon + weapon-select input. Needs the client on `Sim` (ECS PRs 9-10); may ship earlier with a stubbed snapshot.
+   - 2b. Keybind config (`keybinds.toml`) + action map used by Game and Menu contexts.
+7. (a) Move the client onto `Sim` with weapon input (select, fire); (b) weapon bar, ammo, current weapon elements.
 8. Optional: bitmap font atlas. Separate: egui debug tools (#9).
 
 PRs 2 and 4 touch `bomb.rs` / `main.rs` HUD drawing and should rebase on the bomb-display fix being investigated separately.
 
-## Open questions
+## Resolved decisions
 
-- Spectator as a team-join choice? Auto-open team menu each round or only on first join?
-- Loadout changes only in pre-round, or any time (applied next round)?
-- HUD customization depth: toggles + anchor/margin/scale (proposed) vs colours and drag-and-drop.
-- Is adding `serde` + `toml` acceptable for `hud.toml`?
-- Configurable keybinds now, or hard-coded defaults?
-- Weapon HUD: wait for the `Sim` migration or stub now?
+- Menus: custom immediate-mode on the existing HUD.
+- Teams: Alpha, Beta, Spectator (spectator = noclip free-fly). No Auto.
+- Loadout: selectable any time; applied next round (the script already re-gives in pre-round).
+- HUD customization: toggles, anchor/margin/scale, colours, and drag-and-drop (drag edits the anchor + margin, snapping to the nearest anchor).
+- Storage: `hud.toml` in the user config dir (adds `serde` + `toml`).
+- Keybinds: configurable now, stored in a `binds` section of the config file (`keybinds.toml`), with defaults in code.
+
+## Open item
+
+The ECS migration (PRs 1-10) is merged, but only on the engine side: the client (`main.rs`, `bomb.rs`) still runs `ModeSimulation` and has no `Sim`, inventory or weapon input. The weapon/ammo HUD therefore needs a client-on-`Sim` PR first (PR 7a), then the HUD elements (PR 7b). Spectator noclip must map to a client movement mode.
