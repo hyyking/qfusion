@@ -73,3 +73,33 @@ fn deep_recursion_is_rejected() {
     assert!(host.tick().is_err());
     host.add_player(Team::Alpha).unwrap();
 }
+
+#[test]
+fn hot_reload_swaps_rules_keeps_state_and_rejects_bad_scripts() {
+    let mut host = host(
+        "fn init(g) { this.n = 0; } fn tick(g) { this.n += 1; g.emit(\"old\", #{ n: this.n }); }",
+    );
+    host.tick().unwrap();
+    let before = host.state_hash();
+
+    let missing = host.reload_script("fn init(g) {}").unwrap_err().to_string();
+    assert!(missing.contains("tick"), "{missing}");
+    assert!(host.reload_script("fn tick(g) {").is_err());
+    assert_eq!(host.reloads(), 0);
+    assert_eq!(host.state_hash(), before, "a failed reload changes nothing");
+    host.tick().unwrap();
+
+    host.reload_script(
+        "fn init(g) {} fn on_reload(g, old) { g.emit(\"reloaded\", #{ old: old, n: this.n }); } \
+         fn tick(g) { this.n += 10; g.emit(\"new\", #{ n: this.n }); }",
+    )
+    .unwrap();
+    host.tick().unwrap();
+    let events = host.take_events();
+    let kinds: Vec<_> = events.iter().map(|e| e.kind.as_str()).collect();
+    assert_eq!(kinds, ["old", "old", "reloaded", "new"]);
+    assert_eq!(events[2].int("old"), Some(0));
+    assert_eq!(events[2].int("n"), Some(2), "script state survives");
+    assert_eq!(events[3].int("n"), Some(12));
+    assert_eq!(host.reloads(), 1);
+}
