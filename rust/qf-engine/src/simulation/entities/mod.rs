@@ -37,9 +37,11 @@ use crate::content::bsp::{ModelPose, Trace, TracePlane};
 
 const CONTENT_SOLID: u32 = super::pmove::CONTENTS_SOLID;
 
+use super::player::StepError;
 #[cfg(test)]
 use super::pmove::{PMF_ON_GROUND, PMF_TIME_TELEPORT, PmEvent, PmType};
 use super::pmove::{PmoveState, PmoveTouch, PmoveWorld, PredictedEvent, TouchContext, Vec3};
+use super::walk::{TickOutcome, WalkCommand, WalkPlayer};
 
 mod components;
 #[cfg(test)]
@@ -50,6 +52,10 @@ mod logic;
 mod mover_tests;
 mod movers;
 mod parse;
+#[cfg(test)]
+mod player_tests;
+mod players;
+mod schedule;
 mod spawn;
 #[cfg(test)]
 mod tests;
@@ -500,7 +506,8 @@ impl MapEntities {
     pub fn think(&mut self, time_ms: i64) {
         self.world.resource_mut::<Level>().set_time(time_ms);
         self.world.resource_mut::<components::Player>().0 = None;
-        logic::run_thinks(&mut self.world);
+        self.world.resource_mut::<schedule::Run>().thinks = true;
+        schedule::run(&mut self.world, None, None);
     }
 
     /// Fires lump entity `entity` as if another entity had targeted it.
@@ -539,10 +546,73 @@ impl MapEntities {
         player: Option<PushedPlayer<'_>>,
     ) {
         self.world.resource_mut::<components::Player>().0 = None;
-        movers::step(&mut self.world, models, world, time_ms, player);
+        self.world.resource_mut::<Level>().set_time(time_ms);
+        self.world.resource_mut::<schedule::Run>().movers = true;
+        let input = player.as_ref().map(|p| (*p.state, p.ground_entity));
+        self.world.resource_mut::<schedule::MoverFrame>().player = input;
+        schedule::run(&mut self.world, Some(models), Some(world));
+        let output = self
+            .world
+            .resource_mut::<schedule::MoverFrame>()
+            .player
+            .take();
+        if let (Some(player), Some((state, _))) = (player, output) {
+            *player.state = state;
+        }
     }
 
-    /// Entities the player touched during a movement command (`touch_entities`
+    /// Adds the player of `slot`, or replaces its movement state and rules.
+    pub fn set_player(&mut self, slot: u8, player: WalkPlayer) {
+        players::spawn(&mut self.world, slot, player);
+    }
+
+    /// Removes the player of `slot`; returns whether there was one.
+    pub fn remove_player(&mut self, slot: u8) -> bool {
+        players::despawn(&mut self.world, slot)
+    }
+
+    /// Queues the usercmd the player of `slot` applies on the next tick.
+    pub fn push_input(&mut self, slot: u8, command: WalkCommand) {
+        if let Some(entity) = players::entity_of(&mut self.world, slot) {
+            self.world.entity_mut(entity).insert(players::Cmd(command));
+        }
+    }
+
+    /// Movement state of the player of `slot`.
+    pub fn player(&mut self, slot: u8) -> Option<&WalkPlayer> {
+        let entity = players::entity_of(&mut self.world, slot)?;
+        self.world.get::<players::Walker>(entity).map(|w| &w.0)
+    }
+
+    /// What the last tick fed to and got back from `pmove` for `slot`.
+    pub fn last_outcome(&mut self, slot: u8) -> Option<&TickOutcome> {
+        let entity = players::entity_of(&mut self.world, slot)?;
+        self.world.get::<players::LastTick>(entity)?.0.as_ref()
+    }
+
+    /// One fixed tick of the schedule for every player entity: usercmd movement with
+    /// trigger touching in slot order, then the movers (carrying the lowest slot).
+    pub fn tick_players(
+        &mut self,
+        collision: &dyn PmoveWorld,
+        models: &dyn BrushModels,
+        time_ms: i64,
+    ) -> Result<(), StepError> {
+        self.world.resource_mut::<Level>().set_time(time_ms);
+        self.world.resource_mut::<components::Player>().0 = None;
+        self.world.resource_mut::<players::Fault>().0 = None;
+        {
+            let mut run = self.world.resource_mut::<schedule::Run>();
+            run.players = true;
+            run.movers = true;
+        }
+        schedule::run(&mut self.world, Some(models), Some(collision));
+        match self.world.resource_mut::<players::Fault>().0.take() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     /// of the pmove result): walking into a solid button presses it.
     pub fn player_touched(&mut self, entities: &[i32], time_ms: i64) {
         for &entity in entities {
@@ -560,7 +630,7 @@ impl MapEntities {
     }
 
     /// Binds the entities to a world and a level time for one movement tick.
-    pub fn player_touch<'a, M: BrushModels + ?Sized>(
+    pub fn player_touch<'a, M: BrushModels>(
         &'a mut self,
         models: &'a M,
         time_ms: i64,
@@ -574,24 +644,36 @@ impl MapEntities {
 
     fn touch(
         &mut self,
-        models: &(impl BrushModels + ?Sized),
+        models: &dyn BrushModels,
         time_ms: i64,
         state: &mut PmoveState,
         context: &TouchContext,
         predicted: &mut Vec<PredictedEvent>,
     ) {
-        logic::touch(&mut self.world, models, time_ms, state, context, predicted);
+        self.world.resource_mut::<Level>().set_time(time_ms);
+        self.world.resource_mut::<components::Player>().0 = Some(components::PlayerPresence {
+            state: *state,
+            context: *context,
+        });
+        self.world.resource_mut::<schedule::TouchFrame>().swept =
+            logic::swept_bounds(state, context.previous_origin);
+        self.world.resource_mut::<schedule::Run>().touch = true;
+        schedule::run(&mut self.world, Some(models), None);
+        if let Some(player) = schedule::take_player(&mut self.world) {
+            *state = player.state;
+        }
+        schedule::take_predicted(&mut self.world, predicted);
     }
 }
 
 /// [`PmoveTouch`] adapter for one movement tick.
-pub struct PlayerTouch<'a, M: BrushModels + ?Sized> {
+pub struct PlayerTouch<'a, M: BrushModels> {
     entities: &'a mut MapEntities,
     models: &'a M,
     time_ms: i64,
 }
 
-impl<M: BrushModels + ?Sized> PmoveTouch for PlayerTouch<'_, M> {
+impl<M: BrushModels> PmoveTouch for PlayerTouch<'_, M> {
     fn touch_triggers(
         &mut self,
         state: &mut PmoveState,

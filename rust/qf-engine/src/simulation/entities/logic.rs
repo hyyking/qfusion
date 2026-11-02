@@ -10,8 +10,8 @@ use crate::simulation::pmove::{
 };
 
 use super::components::{
-    Enabled, Level, Links, LumpIndex, Occupants, Outbox, PendingTouches, Placement, Player,
-    PlayerPresence, Think, ThinkKind, Timing, TouchKind, UseKind, Volume,
+    Enabled, Level, Links, LumpIndex, Occupants, Outbox, PendingTouches, Placement, Player, Think,
+    ThinkKind, Timing, TouchKind, UseKind, Volume,
 };
 use super::parse::seconds_to_ms;
 use super::{BrushModels, Destination, TriggerEvent, Victim};
@@ -366,24 +366,12 @@ pub(super) fn run_thinks(world: &mut World) {
     }
 }
 
-/// `G_PMoveTouchTriggers`: touch search over the swept box, then the touches.
-pub(super) fn touch(
-    world: &mut World,
-    models: &(impl BrushModels + ?Sized),
-    time_ms: i64,
-    state: &mut PmoveState,
-    context: &TouchContext,
-    predicted: &mut Vec<PredictedEvent>,
-) {
-    world.resource_mut::<Level>().set_time(time_ms);
-    world.resource_mut::<Player>().0 = Some(PlayerPresence {
-        state: *state,
-        context: *context,
-    });
-    run_thinks(world);
-
+/// `G_PMoveTouchTriggers`: touch search over the box swept before the tick's thinks
+/// ran, then the touches in entity number order.
+pub(super) fn touch_pass(world: &mut World, models: &dyn BrushModels, swept: (Vec3, Vec3)) {
+    let time_ms = now(world);
     // The candidate list is built before any touch runs, as in the legacy game.
-    let (mins, maxs) = swept_bounds(state, context.previous_origin);
+    let (mins, maxs) = swept;
     let mut query =
         world.query_filtered::<(Entity, &LumpIndex, &Volume, &Enabled), With<TouchKind>>();
     let mut candidates: Vec<(usize, Entity)> = query
@@ -405,11 +393,6 @@ pub(super) fn touch(
     for entity in std::mem::take(&mut world.resource_mut::<PendingTouches>().0) {
         touch_entity(world, entity, time_ms);
     }
-
-    if let Some(player) = world.resource_mut::<Player>().0.take() {
-        *state = player.state;
-    }
-    predicted.append(&mut world.resource_mut::<Outbox>().predicted);
 }
 
 fn touch_entity(world: &mut World, entity: Entity, time_ms: i64) {
@@ -499,7 +482,7 @@ fn touch_entity(world: &mut World, entity: Entity, time_ms: i64) {
 }
 
 /// Search box of `G_PMoveTouchTriggers`, covering the path since `previous`.
-fn swept_bounds(state: &PmoveState, previous: Vec3) -> (Vec3, Vec3) {
+pub(super) fn swept_bounds(state: &PmoveState, previous: Vec3) -> (Vec3, Vec3) {
     let mut mins = [0.0; 3];
     let mut maxs = [0.0; 3];
     for axis in 0..3 {
