@@ -434,6 +434,7 @@ pub struct GameHost {
     ast: AST,
     hooks: BTreeSet<String>,
     state: Dynamic,
+    faults: u32,
 }
 
 impl fmt::Debug for GameHost {
@@ -444,6 +445,41 @@ impl fmt::Debug for GameHost {
 
 fn script_error(error: impl fmt::Display) -> GameError {
     GameError::Script(error.to_string())
+}
+
+/// Operation budget for one hook invocation. Counted in script operations, never wall
+/// time, so overruns abort at the same point on every machine.
+pub const MAX_HOOK_OPERATIONS: u64 = 2_000_000;
+
+/// A raw engine with only deterministic packages: no `timestamp`/`Instant` (wall clock),
+/// no `eval`, no module resolution, and hard limits on work and data size.
+fn sandboxed_engine() -> Engine {
+    use rhai::packages::{
+        ArithmeticPackage, BasicArrayPackage, BasicFnPackage, BasicIteratorPackage,
+        BasicMapPackage, BasicMathPackage, BasicStringPackage, CorePackage, LogicPackage,
+        MoreStringPackage, Package,
+    };
+    let mut engine = Engine::new_raw();
+    CorePackage::new().register_into_engine(&mut engine);
+    ArithmeticPackage::new().register_into_engine(&mut engine);
+    LogicPackage::new().register_into_engine(&mut engine);
+    BasicStringPackage::new().register_into_engine(&mut engine);
+    MoreStringPackage::new().register_into_engine(&mut engine);
+    BasicMathPackage::new().register_into_engine(&mut engine);
+    BasicArrayPackage::new().register_into_engine(&mut engine);
+    BasicMapPackage::new().register_into_engine(&mut engine);
+    BasicIteratorPackage::new().register_into_engine(&mut engine);
+    BasicFnPackage::new().register_into_engine(&mut engine);
+    engine.disable_symbol("eval");
+    engine.set_max_expr_depths(128, 64);
+    engine.set_max_call_levels(32);
+    engine.set_max_operations(MAX_HOOK_OPERATIONS);
+    engine.set_max_string_size(64 * 1024);
+    engine.set_max_array_size(16 * 1024);
+    engine.set_max_map_size(4 * 1024);
+    engine.on_print(|_| {});
+    engine.on_debug(|_, _, _| {});
+    engine
 }
 
 impl GameHost {
@@ -472,8 +508,7 @@ impl GameHost {
         world_bounds: Option<Bounds>,
         seed: u64,
     ) -> Result<Self, GameError> {
-        let mut engine = Engine::new();
-        engine.set_max_expr_depths(128, 64);
+        let mut engine = sandboxed_engine();
         register_api(&mut engine);
         let ast = engine.compile(script).map_err(script_error)?;
         let hooks = ast.iter_functions().map(|f| f.name.to_string()).collect();
@@ -498,6 +533,7 @@ impl GameHost {
             ast,
             hooks,
             state: Dynamic::from(Map::new()),
+            faults: 0,
         };
         for required in ["init", "tick"] {
             if !host.hooks.contains(required) {
@@ -516,9 +552,34 @@ impl GameHost {
         let options = CallFnOptions::new()
             .eval_ast(false)
             .bind_this_ptr(&mut self.state);
-        self.engine
-            .call_fn_with_options::<Dynamic>(options, &mut Scope::new(), &self.ast, name, args)
-            .map_err(script_error)
+        let result = self.engine.call_fn_with_options::<Dynamic>(
+            options,
+            &mut Scope::new(),
+            &self.ast,
+            name,
+            args,
+        );
+        result.map_err(|error| {
+            self.faults += 1;
+            let mut core = self.game.core();
+            let mut fields = BTreeMap::new();
+            fields.insert("hook".into(), Value::Str(name.to_owned()));
+            fields.insert("tick".into(), Value::Int((core.now / TICK_MS) as i64));
+            fields.insert("message".into(), Value::Str(error.to_string()));
+            core.events.push(GameEvent {
+                kind: "script_fault".into(),
+                fields,
+            });
+            script_error(error)
+        })
+    }
+
+    /// Number of hook invocations that errored or overran their budget. A hook fault
+    /// aborts only that invocation; earlier writes stand and a `script_fault` event is
+    /// queued. What to do after repeated faults (disable the gametype on a server) is
+    /// the caller's policy.
+    pub fn faults(&self) -> u32 {
+        self.faults
     }
 
     pub fn start_match(&mut self) -> Result<(), GameError> {
