@@ -58,6 +58,9 @@ pub enum WaveFunc {
     Sawtooth,
     InverseSawtooth,
     Noise,
+    /// `wave distanceramp v0 v1 d0 d1`: `v0` up to distance `d0`, `v1` from `d1`, linear in
+    /// between. The waveform fields hold `v0 v1 d0 d1` in `base amp phase freq` order.
+    DistanceRamp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,8 +73,25 @@ pub struct Waveform {
 }
 
 impl Waveform {
-    /// Value of the waveform at `time` seconds.
+    /// Distance ramp value at `distance` units from the viewer.
+    pub fn distance_ramp(&self, distance: f32) -> f32 {
+        let (v0, v1, d0, d1) = (self.base, self.amp, self.phase, self.freq);
+        let t = if d1 > d0 {
+            ((distance - d0) / (d1 - d0)).clamp(0.0, 1.0)
+        } else if distance >= d1 {
+            1.0
+        } else {
+            0.0
+        };
+        v0 + (v1 - v0) * t
+    }
+
+    /// Value of the waveform at `time` seconds. Distance ramps have no per-surface viewer
+    /// distance on the CPU, so they evaluate at infinity (the far value).
     pub fn eval(&self, time: f32) -> f32 {
+        if self.func == WaveFunc::DistanceRamp {
+            return self.distance_ramp(f32::INFINITY);
+        }
         let t = self.phase + time * self.freq;
         let f = t - t.floor();
         let v = match self.func {
@@ -92,7 +112,7 @@ impl Waveform {
             }
             WaveFunc::Sawtooth => f,
             WaveFunc::InverseSawtooth => 1.0 - f,
-            WaveFunc::Noise => 0.0,
+            WaveFunc::Noise | WaveFunc::DistanceRamp => 0.0,
         };
         self.base + v * self.amp
     }
@@ -109,6 +129,13 @@ pub enum RgbGen {
     Entity,
     LightingDiffuse,
     Wave(Waveform),
+    /// `teamcolor <n>`: the player's team colour (index 2 alpha, 3 beta). The client has no
+    /// team colours yet and renders it as identity.
+    TeamColor(u32),
+    /// `teamcolorwave <n> <wave>`.
+    TeamColorWave(u32, Waveform),
+    /// `colorwave <r> <g> <b> <wave>`: constant colour scaled by the waveform.
+    ColorWave([f32; 3], Waveform),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -362,7 +389,169 @@ impl Cursor {
             self.pos += 1;
         }
     }
+
+    /// Skips the rest of a false `if` block, including nested ones; the cursor ends after
+    /// the matching `endif`.
+    fn skip_to_endif(&mut self) {
+        let mut depth = 1;
+        let mut line_start = true;
+        while let Some(tok) = self.peek() {
+            match tok {
+                Tok::Word(w) if line_start => {
+                    if w.eq_ignore_ascii_case("if") {
+                        depth += 1;
+                    } else if w.eq_ignore_ascii_case("endif") {
+                        depth -= 1;
+                        if depth == 0 {
+                            self.pos += 1;
+                            return;
+                        }
+                    }
+                    line_start = false;
+                }
+                Tok::Word(_) => {}
+                _ => line_start = true,
+            }
+            self.pos += 1;
+        }
+    }
 }
+
+/// Capabilities assumed for `if` conditions: a GLSL-capable GPU with cube maps, no deluxe
+/// maps and no portal captures.
+fn condition_var(name: &str) -> Option<i64> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "glsl" | "texturecubemap" => 1,
+        "deluxe" | "deluxemaps" | "portalmaps" => 0,
+        "maxtexturesize" | "maxtexturecubemapsize" => 16384,
+        "maxtextureunits" => 16,
+        _ => return None,
+    })
+}
+
+/// Evaluates a shader `if` condition left to right: `[!] var [op value]` clauses joined by
+/// `&&` / `||`. Unknown variables are false.
+fn eval_condition(args: &[String]) -> bool {
+    let args: Vec<String> = args
+        .iter()
+        .filter(|a| !matches!(a.as_str(), "(" | ")"))
+        .cloned()
+        .collect();
+    let args = &args[..];
+    let mut result: Option<bool> = None;
+    let mut join_or = false;
+    let mut i = 0;
+    while i < args.len() {
+        let mut negate = false;
+        let mut name = args[i].as_str();
+        if let Some(rest) = name.strip_prefix('!') {
+            negate = true;
+            name = rest;
+            if name.is_empty() {
+                i += 1;
+                name = args.get(i).map_or("", String::as_str);
+            }
+        }
+        i += 1;
+        let mut value = condition_var(name);
+        if let (Some(op), Some(rhs)) = (
+            args.get(i),
+            args.get(i + 1).and_then(|v| v.parse::<i64>().ok()),
+        ) && matches!(op.as_str(), "<" | "<=" | ">" | ">=" | "==" | "!=")
+        {
+            value = value.map(|v| match op.as_str() {
+                "<" => (v < rhs) as i64,
+                "<=" => (v <= rhs) as i64,
+                ">" => (v > rhs) as i64,
+                ">=" => (v >= rhs) as i64,
+                "==" => (v == rhs) as i64,
+                _ => (v != rhs) as i64,
+            });
+            i += 2;
+        }
+        let clause = value.is_some_and(|v| v != 0) != negate;
+        result = Some(match result {
+            None => clause,
+            Some(prev) if join_or => prev || clause,
+            Some(prev) => prev && clause,
+        });
+        match args.get(i).map(String::as_str) {
+            Some("||") => {
+                join_or = true;
+                i += 1;
+            }
+            Some("&&") => {
+                join_or = false;
+                i += 1;
+            }
+            _ => {}
+        }
+    }
+    result.unwrap_or(false)
+}
+
+/// Directives that are deliberately not interpreted. Everything else unknown produces a
+/// warning, so what remains in `ShaderLib::warnings` is actionable.
+///
+/// Shader level: compile/editor hints (`qer_*`, `q3map_*`), texture filtering flags and
+/// features the client does not implement yet (deform, portal, polygon offset, stencil,
+/// fog volumes, soft particles, GLSL tuning).
+pub const IGNORED_SHADER_DIRECTIVES: &[&str] = &[
+    "nopicmip",
+    "nomipmaps",
+    "nocompress",
+    "nofiltering",
+    "smallestmipsize",
+    "polygonoffset",
+    "stenciltest",
+    "deformvertexes",
+    "portal",
+    "entitymergable",
+    "offsetmappingscale",
+    "glossexponent",
+    "glossintensity",
+    "template",
+    "softparticle",
+    "forceworldoutlines",
+    "fogparms",
+    "fogparams",
+    "skyparms2",
+    "skyparmssides",
+    "skip",
+    "endif",
+    "light",
+    "tesssize",
+    "forceoverlays",
+    "noshadow",
+    "flareshader",
+    "detail",
+    "smallestmipmapsize",
+    "alphashadows",
+    "nomodulativedlights",
+];
+
+/// Prefixes of ignored shader level directives (map compiler and editor keywords).
+pub const IGNORED_SHADER_PREFIXES: &[&str] = &["qer_", "q3map_"];
+
+/// Stage level directives that are deliberately not interpreted (cube maps, timelines,
+/// distortion, cel shading and other effects the world pass does not implement).
+pub const IGNORED_STAGE_DIRECTIVES: &[&str] = &[
+    "cubemap",
+    "shadecubemap",
+    "timelinemap",
+    "timelineclampmap",
+    "timelinemap2",
+    "timelineclampmap2",
+    "distortion",
+    "celshade",
+    "detail",
+    "greyscale",
+    "grayscale",
+    "surroundmap",
+    "videomap",
+    "skip",
+    "endif",
+];
 
 // ---------------------------------------------------------------------------------------------
 // Directive parsing
@@ -377,8 +566,9 @@ fn waveform(args: &[String]) -> Option<Waveform> {
         "triangle" => WaveFunc::Triangle,
         "square" => WaveFunc::Square,
         "sawtooth" => WaveFunc::Sawtooth,
-        "inversesawtooth" => WaveFunc::InverseSawtooth,
-        "noise" => WaveFunc::Noise,
+        "inversesawtooth" | "invsawtooth" => WaveFunc::InverseSawtooth,
+        "noise" | "noize" => WaveFunc::Noise,
+        "distanceramp" => WaveFunc::DistanceRamp,
         _ => return None,
     };
     Some(Waveform {
@@ -412,6 +602,8 @@ fn parse_blend(args: &[String]) -> Option<Blend> {
         "add" => (BlendFactor::One, BlendFactor::One),
         "filter" => (BlendFactor::DstColor, BlendFactor::Zero),
         "blend" => (BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha),
+        // Not blend modes: the legacy parser falls back to additive for them.
+        "decal" | "filterlighting" => (BlendFactor::One, BlendFactor::One),
         _ => (blend_factor(&first)?, blend_factor(args.get(1)?)?),
     };
     Some(Blend { src, dst })
@@ -420,12 +612,20 @@ fn parse_blend(args: &[String]) -> Option<Blend> {
 fn parse_rgbgen(args: &[String]) -> Option<RgbGen> {
     Some(match args.first()?.to_ascii_lowercase().as_str() {
         "identity" => RgbGen::Identity,
-        "identitylighting" => RgbGen::IdentityLighting,
+        "identitylighting" | "lightingidentity" => RgbGen::IdentityLighting,
         "vertex" => RgbGen::Vertex,
         "exactvertex" => RgbGen::ExactVertex,
         "oneminusvertex" => RgbGen::OneMinusVertex,
         "entity" => RgbGen::Entity,
         "lightingdiffuse" => RgbGen::LightingDiffuse,
+        "teamcolor" | "custom" => RgbGen::TeamColor(args.get(1)?.parse().ok()?),
+        "teamcolorwave" | "customwave" => {
+            RgbGen::TeamColorWave(args.get(1)?.parse().ok()?, waveform(&args[2..])?)
+        }
+        "colorwave" => RgbGen::ColorWave(
+            [num(args, 1)?, num(args, 2)?, num(args, 3)?],
+            waveform(&args[4..])?,
+        ),
         "const" | "constant" => {
             let inner: Vec<String> = args[1..]
                 .iter()
@@ -536,8 +736,18 @@ fn parse_stage(cur: &mut Cursor, warnings: &mut Vec<String>, shader: &str) -> St
                 let key = key.to_ascii_lowercase();
                 cur.pos += 1;
                 let args = cur.args();
+                if key == "if" {
+                    if !eval_condition(&args) {
+                        cur.skip_to_endif();
+                    }
+                    continue;
+                }
+                // `$1`-style arguments belong to unexpanded `template` shaders.
+                let templated = args.iter().any(|a| a.starts_with('$'));
                 let mut bad = |what: &str| {
-                    warnings.push(format!("{shader}: malformed {what} `{}`", args.join(" ")));
+                    if !templated {
+                        warnings.push(format!("{shader}: malformed {what} `{}`", args.join(" ")));
+                    }
                 };
                 match key.as_str() {
                     "map" | "clampmap" => match parse_map(&args) {
@@ -547,14 +757,15 @@ fn parse_stage(cur: &mut Cursor, warnings: &mut Vec<String>, shader: &str) -> St
                         }
                         None => bad(&key),
                     },
-                    "animmap" => match num(&args, 0) {
+                    "animmap" | "animclampmap" => match num(&args, 0) {
                         Some(fps) if args.len() > 1 => {
                             stage.map = MapSource::Anim {
                                 fps,
                                 frames: args[1..].to_vec(),
                             };
+                            stage.clamp = key == "animclampmap";
                         }
-                        _ => bad("animmap"),
+                        _ => bad(&key),
                     },
                     "blendfunc" => match parse_blend(&args) {
                         Some(b) => stage.blend = Some(b),
@@ -587,20 +798,23 @@ fn parse_stage(cur: &mut Cursor, warnings: &mut Vec<String>, shader: &str) -> St
                         Some(m) => stage.tc_mods.push(m),
                         None => bad("tcmod"),
                     },
-                    "material" => match args.first() {
-                        Some(image) => {
-                            stage.map = MapSource::Image(image.to_string());
-                            stage.material = true;
-                        }
-                        None => bad("material"),
-                    },
+                    "material" => {
+                        // Without arguments the shader's own name is the diffuse image.
+                        stage.map = MapSource::Image(
+                            args.first().cloned().unwrap_or_else(|| shader.to_string()),
+                        );
+                        stage.material = true;
+                    }
                     "depthwrite" => explicit_depth_write = true,
                     "depthfunc" => {
                         stage.depth_equal = args
                             .first()
                             .is_some_and(|a| a.eq_ignore_ascii_case("equal"));
                     }
-                    _ => {}
+                    k if IGNORED_STAGE_DIRECTIVES.contains(&k)
+                        || IGNORED_SHADER_PREFIXES.iter().any(|p| k.starts_with(p))
+                        || k.starts_with('$') => {}
+                    _ => warnings.push(format!("{shader}: unknown stage directive `{key}`")),
                 }
             }
         }
@@ -651,6 +865,12 @@ fn parse_shader_body(cur: &mut Cursor, name: &str, warnings: &mut Vec<String>) -
                 let key = key.to_ascii_lowercase();
                 cur.pos += 1;
                 let args = cur.args();
+                if key == "if" {
+                    if !eval_condition(&args) {
+                        cur.skip_to_endif();
+                    }
+                    continue;
+                }
                 match key.as_str() {
                     "cull" => {
                         shader.cull = match args.first().map(|a| a.to_ascii_lowercase()) {
@@ -704,7 +924,9 @@ fn parse_shader_body(cur: &mut Cursor, name: &str, warnings: &mut Vec<String>) -
                             })
                         });
                     }
-                    _ => {}
+                    k if IGNORED_SHADER_DIRECTIVES.contains(&k)
+                        || IGNORED_SHADER_PREFIXES.iter().any(|p| k.starts_with(p)) => {}
+                    _ => warnings.push(format!("{name}: unknown directive `{key}`")),
                 }
             }
         }
@@ -740,6 +962,7 @@ impl ShaderLib {
 
     /// Parses a script; the first definition of a name wins. Returns shaders added.
     pub fn parse_script(&mut self, text: &str, source: &str) -> usize {
+        let text = text.trim_start_matches('\u{feff}');
         let mut cur = Cursor {
             toks: tokenize(text),
             pos: 0,
@@ -755,6 +978,17 @@ impl ShaderLib {
             };
             let name = name.clone();
             cur.pos += 1;
+            if name.eq_ignore_ascii_case("endif") {
+                cur.skip_line();
+                continue;
+            }
+            if name.eq_ignore_ascii_case("if") {
+                let args = cur.args();
+                if !eval_condition(&args) {
+                    cur.skip_to_endif();
+                }
+                continue;
+            }
             cur.skip_line();
             cur.skip_newlines();
             if cur.peek() != Some(&Tok::Open) {
@@ -989,5 +1223,94 @@ textures/a/after { { map after.tga } }
         );
         assert!(lib.get("x").is_some());
         assert!(!lib.warnings.is_empty());
+    }
+
+    fn stage_of(script: &str, name: &str) -> (ShaderLib, Vec<Stage>) {
+        let mut lib = ShaderLib::new();
+        lib.parse_script(script, "t");
+        let stages = lib.get(name).unwrap().stages.clone();
+        (lib, stages)
+    }
+
+    #[test]
+    fn rgbgen_teamcolor_and_lightingidentity() {
+        let (lib, st) = stage_of(
+            "a {\n{\nmap a.tga\nrgbgen teamcolor 2\n}\n{\nmap b.tga\nrgbgen lightingidentity\n}\n{\nmap c.tga\nrgbgen teamcolorwave 3 sin 0.5 0.5 0 1\n}\n}",
+            "a",
+        );
+        assert!(lib.warnings.is_empty(), "{:?}", lib.warnings);
+        assert!(matches!(st[0].rgb_gen, RgbGen::TeamColor(_)));
+        assert_eq!(st[1].rgb_gen, RgbGen::IdentityLighting);
+    }
+
+    #[test]
+    fn distanceramp_and_extra_waveforms_parse() {
+        let (lib, st) = stage_of(
+            "a {\n{\nmap a.tga\nalphagen distanceramp 0 1 100 200\n}\n{\nmap b.tga\nrgbgen wave invsawtooth 0 1 0 1\n}\n{\nmap c.tga\nrgbgen wave noize 0 1 0 1\n}\n}",
+            "a",
+        );
+        assert!(lib.warnings.is_empty(), "{:?}", lib.warnings);
+        assert_eq!(st.len(), 3);
+    }
+
+    #[test]
+    fn material_without_args_uses_shader_name() {
+        let (_, st) = stage_of("textures/m/x {\n{\nmaterial\n}\n}", "textures/m/x");
+        assert!(
+            st.iter()
+                .any(|s| s.map == MapSource::Image("textures/m/x".into()))
+        );
+    }
+
+    #[test]
+    fn decal_blendfunc_is_accepted() {
+        let (lib, st) = stage_of("a {\n{\nmap a.tga\nblendfunc decal\n}\n}", "a");
+        assert!(lib.warnings.is_empty(), "{:?}", lib.warnings);
+        assert!(st[0].blend.is_some());
+    }
+
+    #[test]
+    fn conditionals_select_branches() {
+        let script = "a {\nif ( maxtexturesize > 8192 )\n{\nmap big.tga\n}\nendif\nif deluxe\n{\nmap deluxe.tga\n}\nendif\n{\nmap tail.tga\n}\n}\nb {\ncull none\n}\n";
+        let mut lib = ShaderLib::new();
+        lib.parse_script(script, "t");
+        let maps: Vec<_> = lib
+            .get("a")
+            .unwrap()
+            .stages
+            .iter()
+            .map(|s| s.map.clone())
+            .collect();
+        assert!(maps.contains(&MapSource::Image("big.tga".into())));
+        assert!(!maps.contains(&MapSource::Image("deluxe.tga".into())));
+        assert!(maps.contains(&MapSource::Image("tail.tga".into())));
+        assert!(lib.get("b").is_some());
+        assert!(lib.warnings.is_empty(), "{:?}", lib.warnings);
+    }
+
+    #[test]
+    fn bom_is_stripped() {
+        let mut lib = ShaderLib::new();
+        lib.parse_script("\u{feff}a { cull none }", "t");
+        assert!(lib.get("a").is_some());
+    }
+
+    #[test]
+    fn ignored_directives_are_silent_and_unknown_ones_warn() {
+        let mut lib = ShaderLib::new();
+        lib.parse_script(
+            "a {\nforceoverlays\nnoshadow\nq3map_foo 1\n{\nmap a.tga\nvideomap x\nq3map_bar\n$2\n}\n}\nb {\nbogusdirective\n{\nmap a.tga\nbogusstage\n}\n}",
+            "t",
+        );
+        assert_eq!(lib.warnings.len(), 2, "{:?}", lib.warnings);
+        assert!(lib.warnings[0].contains("bogusdirective"));
+        assert!(lib.warnings[1].contains("bogusstage"));
+    }
+
+    #[test]
+    fn templated_arguments_do_not_warn() {
+        let mut lib = ShaderLib::new();
+        lib.parse_script("a {\n{\nmap $1\nrgbgen $2\n}\n}", "t");
+        assert!(lib.warnings.is_empty(), "{:?}", lib.warnings);
     }
 }
