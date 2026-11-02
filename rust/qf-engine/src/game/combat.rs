@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use super::firing::PlayerInput;
 use super::inventory::Inventory;
 use crate::simulation::pmove::Vec3;
 
@@ -53,6 +54,10 @@ pub struct Player {
     pub yaw: f32,
     pub pitch: f32,
     pub inventory: Inventory,
+    /// Weapon buttons for the next tick.
+    pub input: PlayerInput,
+    /// Knockback velocity gained since movement last consumed it (see `take_impulse`).
+    pub impulse: Vec3,
     /// Free-form per-player counters and flags owned by the gametype script.
     pub stats: BTreeMap<String, i64>,
 }
@@ -69,6 +74,8 @@ impl Player {
             yaw: 0.0,
             pitch: 0.0,
             inventory: Inventory::default(),
+            input: PlayerInput::default(),
+            impulse: [0.0; 3],
             stats: BTreeMap::new(),
         }
     }

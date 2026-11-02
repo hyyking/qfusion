@@ -47,7 +47,11 @@ fn tick(g) {
     this.ticks += 1;
     if this.ticks == 5 { g.emit("five", #{ now: g.now(), roll: g.rand(1000) }); }
 }
-fn on_command(g, id, name, args) { name == "ping" }
+fn on_command(g, id, name, args) {
+    if name == "unlock" { g.set_movement_locked(false); }
+    if name == "arm" { g.give_weapon(id, "eb", 5); }
+    name == "ping" || name == "unlock" || name == "arm"
+}
 fn on_damage(g, victim, attacker, amount) { g.apply_damage(victim, amount); }
 fn hud(g, id) { #{ health: g.health(id), ticks: this.ticks } }
 "#;
@@ -109,6 +113,59 @@ fn same_seed_gives_same_random_numbers_and_different_seeds_differ() {
     };
     assert_eq!(roll(7), roll(7));
     assert_ne!(roll(7), roll(8));
+}
+
+#[test]
+fn fire_input_runs_weapons_and_routes_damage_through_the_script() {
+    use qf_engine::game::{PlayerInput, WeaponEvent};
+    let mut host = host(1);
+    let shooter = host.add_player(Team::Alpha).unwrap();
+    let victim = host.add_player(Team::Beta).unwrap();
+    host.set_player_motion(victim, [310.0, 20.0, 24.0], [0.0; 3], 0.0, 0.0);
+    host.set_player_motion(shooter, [10.0, 20.0, 24.0], [0.0; 3], 0.0, 0.0);
+    host.command(shooter, "arm", "").unwrap();
+    host.command(shooter, "unlock", "").unwrap();
+    let fire = PlayerInput {
+        fire: true,
+        ..PlayerInput::default()
+    };
+    for _ in 0..12 {
+        host.set_player_input(shooter, fire);
+        host.tick().unwrap();
+    }
+    let events = host.take_weapon_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, WeaponEvent::Damage { victim: v, .. } if *v == victim))
+    );
+    assert!(host.player(victim).health < 100.0);
+    assert!(
+        host.player(shooter)
+            .inventory
+            .ammo(qf_engine::game::WeaponId::Electrobolt)
+            < 5
+    );
+    assert!(host.take_impulse(victim)[0] > 0.0);
+}
+
+#[test]
+fn weapons_stay_silent_while_movement_is_locked() {
+    use qf_engine::game::PlayerInput;
+    let mut host = host(1);
+    let shooter = host.add_player(Team::Alpha).unwrap();
+    host.command(shooter, "arm", "").unwrap();
+    for _ in 0..12 {
+        host.set_player_input(
+            shooter,
+            PlayerInput {
+                fire: true,
+                ..PlayerInput::default()
+            },
+        );
+        host.tick().unwrap();
+    }
+    assert!(host.take_weapon_events().is_empty());
 }
 
 #[test]

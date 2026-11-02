@@ -5,11 +5,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use qf_engine::content::bsp::Bsp;
-use qf_engine::game::{BOMB_SCRIPT, GameError, GameHost, Team, Value};
+use qf_engine::game::{BOMB_SCRIPT, GameError, GameHost, PlayerInput, Team, Value, WeaponId};
 use qf_engine::simulation::pmove::{PMFEAT_DASH, PMFEAT_JUMP, PMFEAT_WALLJUMP, PmoveStats};
 use qf_engine::simulation::walk::{ModeSimulation, MovementMode};
 
 use crate::hud::{Anchor, Canvas, HAnchor, Rect, Screen, VAnchor, text_size};
+use crate::weapon_fx::{Effects, SoundCue, WeaponHud};
 
 const LOCKED_SPEED: i32 = 100;
 
@@ -17,6 +18,10 @@ pub struct BombSession {
     host: GameHost,
     player: usize,
     unlocked_stats: Option<PmoveStats>,
+    input: PlayerInput,
+    sounds: Vec<SoundCue>,
+    pub effects: Effects,
+    pub weapon_hud: WeaponHud,
     pub hud: BombHud,
 }
 
@@ -29,8 +34,28 @@ impl BombSession {
             host,
             player,
             unlocked_stats: None,
+            input: PlayerInput::default(),
+            sounds: Vec::new(),
+            effects: Effects::default(),
+            weapon_hud: WeaponHud::default(),
             hud: BombHud::default(),
         })
+    }
+
+    pub fn set_fire(&mut self, fire: bool) {
+        self.input.fire = fire;
+    }
+
+    pub fn select_weapon(&mut self, weapon: WeaponId) {
+        self.input.select = Some(weapon);
+    }
+
+    pub fn cycle_weapon(&mut self, step: i32) {
+        self.input.cycle += step.signum();
+    }
+
+    pub fn take_sounds(&mut self) -> Vec<SoundCue> {
+        std::mem::take(&mut self.sounds)
     }
 
     /// Runs `ticks` 125 Hz gametype ticks, teleporting the walking player on spawn events.
@@ -44,15 +69,30 @@ impl BombSession {
         for _ in 0..ticks {
             if let MovementMode::Walk(walk) = simulation.mode() {
                 let [pitch, yaw, _] = walk.view_angles;
+                // The client's pitch is positive looking up, the game's is positive down.
                 self.host.set_player_motion(
                     self.player,
                     walk.state.origin,
                     walk.state.velocity,
                     yaw,
-                    pitch,
+                    -pitch,
                 );
             }
+            self.host.set_player_input(self.player, self.input);
+            self.input.select = None;
+            self.input.cycle = 0;
             self.host.tick()?;
+            let impulse = self.host.take_impulse(self.player);
+            if let MovementMode::Walk(walk) = simulation.mode_mut() {
+                for (velocity, push) in walk.state.velocity.iter_mut().zip(impulse) {
+                    *velocity += push;
+                }
+            }
+            for event in self.host.take_weapon_events() {
+                if let Some(cue) = self.effects.push_event(&event, self.player) {
+                    self.sounds.push(cue);
+                }
+            }
             for event in self.host.take_events() {
                 match event.kind.as_str() {
                     "spawn" if event.int("player") == Some(self.player as i64) => {
@@ -73,6 +113,9 @@ impl BombSession {
             }
         }
         self.hud = BombHud::from_values(&self.host.hud(self.player)?);
+        self.weapon_hud = WeaponHud::from_inventory(&self.host.player(self.player).inventory);
+        self.effects.set_projectiles(&self.host.projectiles());
+        self.effects.advance(ticks as u32);
         Ok(respawned)
     }
 

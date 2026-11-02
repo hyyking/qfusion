@@ -18,6 +18,7 @@ use crate::simulation::bsp_world::BspWorld;
 use crate::simulation::pmove::{PmTrace, PmoveWorld, Vec3};
 
 use super::combat::{Player, Team};
+use super::firing::{PlayerInput, Projectile, WeaponEvent, Weapons};
 use super::vec::{Bounds, Rng, add, distance, dot, length, scale, sub};
 use super::weapons::WeaponId;
 
@@ -130,6 +131,9 @@ struct Core {
     rng: Rng,
     events: Vec<GameEvent>,
     movement_locked: bool,
+    seed: u64,
+    weapons: Weapons,
+    weapon_events: Vec<WeaponEvent>,
 }
 
 #[derive(Clone)]
@@ -518,6 +522,9 @@ impl GameHost {
             rng: Rng::new(seed),
             events: Vec::new(),
             movement_locked: true,
+            seed,
+            weapons: Weapons::default(),
+            weapon_events: Vec::new(),
         })));
         let mut host = Self {
             game,
@@ -552,10 +559,70 @@ impl GameHost {
         self.call("start_match", (self.game.clone(),)).map(drop)
     }
 
-    /// Advances the simulation by one fixed 8 ms tick.
+    /// Advances the simulation by one fixed 8 ms tick: weapons and projectiles first
+    /// (their damage goes through the script's `on_damage` rule), then the gametype.
     pub fn tick(&mut self) -> Result<(), GameError> {
-        self.game.core().now += TICK_MS;
+        let damages = {
+            let mut core = self.game.core();
+            core.now += TICK_MS;
+            let core = &mut *core;
+            if core.movement_locked {
+                for player in &mut core.players {
+                    player.input.fire = false;
+                }
+            }
+            let events = core.weapons.step(
+                &mut core.players,
+                &*core.world,
+                core.seed,
+                core.now / TICK_MS,
+                TICK_MS as u32,
+            );
+            let damages: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    WeaponEvent::Damage {
+                        victim,
+                        attacker,
+                        amount,
+                        ..
+                    } => Some((*victim, *attacker, *amount)),
+                    _ => None,
+                })
+                .collect();
+            core.weapon_events.extend(events);
+            damages
+        };
+        for (victim, attacker, amount) in damages {
+            self.damage(victim, Some(attacker), amount)?;
+        }
         self.call("tick", (self.game.clone(),)).map(drop)
+    }
+
+    /// Sets the weapon buttons used from the next tick on. `select` and `cycle` are
+    /// consumed once; `fire` stays until changed.
+    pub fn set_player_input(&mut self, id: usize, input: PlayerInput) {
+        let mut core = self.game.core();
+        let player = &mut core.players[id];
+        player.input.fire = input.fire;
+        if input.select.is_some() {
+            player.input.select = input.select;
+        }
+        player.input.cycle += input.cycle;
+    }
+
+    /// Knockback accumulated since the last call, for the movement simulation to add
+    /// to the player's velocity.
+    pub fn take_impulse(&mut self, id: usize) -> Vec3 {
+        std::mem::take(&mut self.game.core().players[id].impulse)
+    }
+
+    pub fn take_weapon_events(&mut self) -> Vec<WeaponEvent> {
+        std::mem::take(&mut self.game.core().weapon_events)
+    }
+
+    pub fn projectiles(&self) -> Vec<Projectile> {
+        self.game.core().weapons.projectiles().to_vec()
     }
 
     pub fn add_player(&mut self, team: Team) -> Result<usize, GameError> {

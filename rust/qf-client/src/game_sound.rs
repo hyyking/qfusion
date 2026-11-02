@@ -62,6 +62,7 @@ impl GameSound {
         let mut system = AudioSystem::new(handle, vfs);
         system.preload_builtin();
         system.preload([TEST_SOUND]);
+        system.preload(crate::weapon_fx::sound_paths());
         let speakers = SpeakerSet::from_entities(&bsp.parsed_entities);
         for warning in &speakers.warnings {
             eprintln!(
@@ -101,6 +102,22 @@ impl GameSound {
                 self.system.handle_event(&event);
             }
         }
+        self.print_reports();
+    }
+
+    pub fn play_cue(&mut self, cue: &crate::weapon_fx::SoundCue) {
+        let position = cue
+            .origin
+            .map_or(SoundPosition::Local, |origin| SoundPosition::World {
+                origin,
+                attenuation: 1.0,
+            });
+        self.system.handle_event(&SoundEvent::Play {
+            sound: SoundName::Path(cue.path.into()),
+            position,
+            volume: 1.0,
+            channel: SoundChannel::Auto,
+        });
         self.print_reports();
     }
 

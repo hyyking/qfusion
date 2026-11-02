@@ -7,6 +7,7 @@ mod headless;
 mod hud;
 mod math;
 mod render;
+mod weapon_fx;
 mod world;
 
 use std::collections::HashSet;
@@ -385,8 +386,26 @@ impl ApplicationHandler for App {
                                 bomb.switch_team();
                             }
                         }
+                        Key::Character(ref key) if weapon_fx::weapon_for_key(key).is_some() => {
+                            if let (Some(bomb), Some(weapon)) =
+                                (&mut self.bomb, weapon_fx::weapon_for_key(key))
+                            {
+                                bomb.select_weapon(weapon);
+                            }
+                        }
                         _ => {}
                     }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let steps = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                    winit::event::MouseScrollDelta::PixelDelta(position) => position.y as f32,
+                };
+                if let Some(bomb) = &mut self.bomb
+                    && steps != 0.0
+                {
+                    bomb.cycle_weapon(if steps > 0.0 { 1 } else { -1 });
                 }
             }
             WindowEvent::MouseInput {
@@ -399,9 +418,21 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } if !self.mouse_grabbed => self.set_mouse_grab(true),
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(bomb) = &mut self.bomb {
+                    bomb.set_fire(state == ElementState::Pressed);
+                }
+            }
             WindowEvent::Focused(false) => {
                 self.pressed_keys.clear();
                 self.right_mouse_down = false;
+                if let Some(bomb) = &mut self.bomb {
+                    bomb.set_fire(false);
+                }
                 self.set_mouse_grab(false);
             }
             WindowEvent::Focused(true) => self.set_mouse_grab(true),
@@ -493,6 +524,11 @@ impl ApplicationHandler for App {
                         &mut self.simulation,
                         &trigger_events,
                     );
+                    if let Some(bomb) = &mut self.bomb {
+                        for cue in bomb.take_sounds() {
+                            audio.play_cue(&cue);
+                        }
+                    }
                 }
                 if let Some(r) = &mut self.renderer {
                     let [width, height] = r.size();
@@ -518,6 +554,13 @@ impl ApplicationHandler for App {
                     self.hud_record.draw(&screen, &mut self.hud_canvas);
                     if let Some(bomb) = &self.bomb {
                         bomb.hud.draw(&screen, &mut self.hud_canvas);
+                        bomb.weapon_hud.draw(&screen, &mut self.hud_canvas);
+                        let mvp = render::view_projection(
+                            eye,
+                            self.view_angles,
+                            screen.width / screen.height,
+                        );
+                        bomb.effects.draw(&mvp, &screen, &mut self.hud_canvas);
                     }
                     let movers = self
                         .simulation

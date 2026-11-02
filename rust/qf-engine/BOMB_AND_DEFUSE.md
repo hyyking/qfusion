@@ -31,7 +31,7 @@ bomb sites from the map's entities by classname, so it is not tied to `wbomb1`.
 | Explosion | 30 s after arming. Flat 9001 radius/damage kills everything with LOS, then the site's `target_explosion`/`func_explosive` entities fire with their delays (radius + linear falloff + LOS). Attackers win the round. |
 | Defuse | Same progress rule with defenders, 7 s. Checked before the explode timer. Defenders win. Warning at 12 s before the blast. |
 | Win conditions | attackers dead and bomb not armed → defenders; defenders dead → attackers; round timeout without an armed bomb → defenders; defuse → defenders; explosion → attackers (scored once). |
-| Loadout | health 100, armor 100, gunblade + primary (default RL+EB, choose 2 of rl/lg/eb) + secondary (default PG; pg/rg/mg/gl/gb). Ammo as legacy. Weapons are data only. |
+| Loadout | health 100, armor 100, gunblade + primary (default RL+EB, choose 2 of rl/lg/eb) + secondary (default PG; pg/rg/mg/gl/gb). Ammo as legacy. Weapons fire via `game::firing` (single fire mode per weapon, legacy "strong" values; hitscan + rocket/grenade/plasma projectiles with splash/knockback routed through `on_damage`). Pickups (`game::pickups`) are standalone data, not yet wired into `GameHost`. |
 | Damage | Armor rule above. Teamdamage during spawn protection (3 s) is reflected (×2 first third, ×0.5 last third; armor −dmg/2, health −dmg). |
 | Items | Disabled in the mode (`spawnableItemsMask = 0`); item entities on wbomb1 are ignored. |
 
