@@ -14,6 +14,8 @@ use crate::hud::{Anchor, HAnchor, VAnchor};
 pub const UPS: &str = "ups";
 pub const FPS: &str = "fps";
 pub const RECORD: &str = "record";
+pub const WEAPONS: &str = "weapons";
+pub const AMMO: &str = "ammo";
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -80,6 +82,8 @@ impl HudLayout {
             UPS => ElementLayout::new(HAnchor::Center, VAnchor::Bottom, [0.0, 48.0]),
             FPS => ElementLayout::new(HAnchor::Right, VAnchor::Top, [16.0, 16.0]),
             RECORD => ElementLayout::new(HAnchor::Left, VAnchor::Top, [16.0, 16.0]),
+            WEAPONS => ElementLayout::new(HAnchor::Right, VAnchor::Bottom, [16.0, 16.0]),
+            AMMO => ElementLayout::new(HAnchor::Right, VAnchor::Bottom, [16.0, 88.0]),
             _ => ElementLayout::default(),
         }
     }
@@ -135,7 +139,7 @@ impl HudLayout {
 impl Default for HudLayout {
     fn default() -> Self {
         Self {
-            elements: [UPS, FPS, RECORD]
+            elements: [UPS, FPS, RECORD, WEAPONS, AMMO]
                 .into_iter()
                 .map(|name| (name.to_owned(), Self::default_for(name)))
                 .collect(),

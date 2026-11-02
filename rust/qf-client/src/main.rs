@@ -5,11 +5,13 @@ mod bomb;
 mod game_sound;
 mod headless;
 mod hud;
+mod hud_editor;
 mod hud_layout;
 mod loadout;
 mod math;
 mod menu;
 mod render;
+mod weapon_hud;
 mod world;
 
 use std::collections::HashSet;
@@ -62,6 +64,8 @@ struct App {
     hud_ups: hud::UpsCounter,
     hud_fps: hud::FpsCounter,
     hud_record: hud::RecordIndicator,
+    /// Fed once the client runs on Sim (no inventory before that).
+    weapon_hud: weapon_hud::WeaponHud,
     recorder: Option<Recorder>,
     record_path: Option<PathBuf>,
     map: MapIdentity,
@@ -69,6 +73,8 @@ struct App {
     sensitivity: f32,
     mouse_grabbed: bool,
     menu: menu::Menu,
+    layout: hud_layout::HudLayout,
+    hud_editor: Option<hud_editor::HudEditor>,
     /// Last cursor position in window pixels, for menu hit-testing.
     cursor: [f32; 2],
     /// The first raw motion after a grab can carry a stale jump; drop it.
@@ -124,6 +130,8 @@ impl App {
         hud_fps.set_layout(layout.get(hud_layout::FPS));
         let mut hud_record = hud::RecordIndicator::new();
         hud_record.set_layout(layout.get(hud_layout::RECORD));
+        let mut weapon_hud = weapon_hud::WeaponHud::new();
+        weapon_hud.set_layout(&layout);
         let mut app = Self {
             window: None,
             renderer: None,
@@ -140,6 +148,7 @@ impl App {
             hud_ups,
             hud_fps,
             hud_record,
+            weapon_hud,
             recorder: None,
             record_path: None,
             map,
@@ -147,6 +156,8 @@ impl App {
             sensitivity,
             mouse_grabbed: false,
             menu: menu::Menu::pause(),
+            layout,
+            hud_editor: None,
             cursor: [0.0; 2],
             skip_next_motion: false,
             mouse_delta: [0.0; 2],
@@ -276,6 +287,54 @@ impl App {
         }
     }
 
+    /// Whether a menu or the HUD editor owns the input (gameplay input is neutral).
+    fn ui_active(&self) -> bool {
+        self.menu.is_open() || self.hud_editor.is_some()
+    }
+
+    fn apply_layout(&mut self, layout: &hud_layout::HudLayout) {
+        self.hud_ups.set_layout(layout.get(hud_layout::UPS));
+        self.hud_fps.set_layout(layout.get(hud_layout::FPS));
+        self.hud_record.set_layout(layout.get(hud_layout::RECORD));
+        self.weapon_hud.set_layout(layout);
+        self.layout = layout.clone();
+    }
+
+    fn start_hud_editor(&mut self) {
+        self.menu.close();
+        self.hud_editor = Some(hud_editor::HudEditor::new(&self.layout));
+        self.set_mouse_grab(false);
+    }
+
+    fn finish_editor(&mut self, outcome: hud_editor::EditorOutcome) {
+        use hud_editor::EditorOutcome;
+        match outcome {
+            EditorOutcome::None => {}
+            EditorOutcome::Changed => {
+                if let Some(editor) = &self.hud_editor {
+                    let layout = editor.layout().clone();
+                    self.apply_layout(&layout);
+                }
+            }
+            EditorOutcome::Save(layout) => {
+                self.apply_layout(&layout);
+                if let Some(path) = hud_layout::layout_path()
+                    && let Err(error) = layout.save(&path)
+                {
+                    eprintln!("hud layout not saved: {}: {error}", path.display());
+                }
+                self.hud_editor = None;
+                self.set_mouse_grab(true);
+            }
+            EditorOutcome::Cancel => {
+                if let Some(editor) = self.hud_editor.take() {
+                    self.apply_layout(editor.original());
+                }
+                self.set_mouse_grab(true);
+            }
+        }
+    }
+
     fn open_menu(&mut self) {
         self.menu = menu::Menu::pause();
         self.menu.open();
@@ -289,6 +348,7 @@ impl App {
                 self.set_mouse_grab(true);
             }
             menu::UiAction::Quit => event_loop.exit(),
+            menu::UiAction::EditHud => self.start_hud_editor(),
             menu::UiAction::OpenMenu(id) => {
                 if let Some(bomb) = &self.bomb {
                     self.menu = bomb.loadout.menu(id);
@@ -428,6 +488,34 @@ impl ApplicationHandler for App {
                     }
                 }
                 if event.state == ElementState::Pressed && !event.repeat {
+                    if self.hud_editor.is_some() {
+                        let shift = self.pressed_keys.contains(&KeyCode::ShiftLeft)
+                            || self.pressed_keys.contains(&KeyCode::ShiftRight);
+                        let key = match &event.logical_key {
+                            Key::Named(NamedKey::Tab) if shift => Some(hud_editor::EditorKey::Prev),
+                            Key::Named(NamedKey::Tab) => Some(hud_editor::EditorKey::Next),
+                            Key::Named(NamedKey::Enter) => Some(hud_editor::EditorKey::Save),
+                            Key::Named(NamedKey::Escape) => Some(hud_editor::EditorKey::Cancel),
+                            Key::Character(c) => match c.as_str() {
+                                "e" | "E" => Some(hud_editor::EditorKey::Toggle),
+                                "+" | "=" => Some(hud_editor::EditorKey::ScaleUp),
+                                "-" | "_" => Some(hud_editor::EditorKey::ScaleDown),
+                                "c" => Some(hud_editor::EditorKey::NextColor),
+                                "C" => Some(hud_editor::EditorKey::PrevColor),
+                                "r" => Some(hud_editor::EditorKey::Reset),
+                                "R" => Some(hud_editor::EditorKey::ResetAll),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let Some(key) = key {
+                            let outcome = self.hud_editor.as_mut().map(|e| e.key(key));
+                            if let Some(outcome) = outcome {
+                                self.finish_editor(outcome);
+                            }
+                        }
+                        return;
+                    }
                     if self.menu.is_open() {
                         let shift = self.pressed_keys.contains(&KeyCode::ShiftLeft)
                             || self.pressed_keys.contains(&KeyCode::ShiftRight);
@@ -514,6 +602,29 @@ impl ApplicationHandler for App {
                 self.cursor = [position.x as f32, position.y as f32];
                 let screen = self.screen();
                 self.menu.hover(&screen, self.cursor);
+                let cursor = self.cursor;
+                let outcome = self
+                    .hud_editor
+                    .as_mut()
+                    .map(|editor| editor.pointer_move(&screen, cursor));
+                if let Some(outcome) = outcome {
+                    self.finish_editor(outcome);
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } if self.hud_editor.is_some() => {
+                let screen = self.screen();
+                let cursor = self.cursor;
+                if let Some(editor) = &mut self.hud_editor {
+                    if state == ElementState::Pressed {
+                        editor.pointer_down(&screen, cursor);
+                    } else {
+                        editor.pointer_up();
+                    }
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -541,7 +652,7 @@ impl ApplicationHandler for App {
                 self.set_mouse_grab(false);
             }
             WindowEvent::Focused(true) => {
-                if !self.menu.is_open() {
+                if !self.ui_active() {
                     self.set_mouse_grab(true);
                 }
             }
@@ -577,7 +688,7 @@ impl ApplicationHandler for App {
                 } else {
                     self.key_axis(KeyCode::KeyR, KeyCode::KeyF)
                 };
-                let in_game = !self.menu.is_open();
+                let in_game = !self.ui_active();
                 let command = WalkCommand {
                     forward: if in_game {
                         self.key_axis(KeyCode::KeyW, KeyCode::KeyS)
@@ -671,11 +782,15 @@ impl ApplicationHandler for App {
                     self.hud_ups.draw(&screen, &mut self.hud_canvas);
                     self.hud_fps.draw(&screen, &mut self.hud_canvas);
                     self.hud_record.draw(&screen, &mut self.hud_canvas);
+                    self.weapon_hud.draw(&screen, &mut self.hud_canvas);
                     if let Some(bomb) = &self.bomb {
                         bomb.hud.draw(&screen, &mut self.hud_canvas);
                     }
                     self.menu
                         .draw(&screen, Some(self.cursor), &mut self.hud_canvas);
+                    if let Some(editor) = &self.hud_editor {
+                        editor.draw(&screen, &mut self.hud_canvas);
+                    }
                     let movers = self
                         .simulation
                         .entities()

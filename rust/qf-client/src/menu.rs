@@ -19,6 +19,8 @@ pub enum InputContext {
 pub enum UiAction {
     Resume,
     Quit,
+    /// Open the HUD layout editor.
+    EditHud,
     /// Join a team or spectate.
     SetTeam(TeamChoice),
     OpenMenu(crate::loadout::MenuId),
@@ -109,6 +111,10 @@ impl Menu {
                 MenuItem {
                     label: "RESUME".into(),
                     action: UiAction::Resume,
+                },
+                MenuItem {
+                    label: "HUD LAYOUT".into(),
+                    action: UiAction::EditHud,
                 },
                 MenuItem {
                     label: "QUIT".into(),
@@ -358,7 +364,7 @@ mod tests {
     fn keys_wrap_and_activate() {
         let mut menu = open_menu();
         assert_eq!(menu.key(MenuKey::Up), None);
-        assert_eq!(menu.selected(), 1);
+        assert_eq!(menu.selected(), 2);
         assert_eq!(menu.key(MenuKey::Activate), Some(UiAction::Quit));
         menu.key(MenuKey::Down);
         assert_eq!(menu.selected(), 0);
@@ -372,7 +378,7 @@ mod tests {
         let (panel, items) = menu.layout(&SCREEN);
         assert!((panel.x + panel.w * 0.5 - 500.0).abs() < 0.01);
         assert!((panel.y + panel.h * 0.5 - 300.0).abs() < 0.01);
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         for b in &items {
             assert!(panel.contains([b.x, b.y]));
             assert!(panel.contains([b.x + b.w - 1.0, b.y + b.h - 1.0]));
