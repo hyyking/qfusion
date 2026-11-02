@@ -198,7 +198,7 @@ mod replay {
     use super::*;
     use qf_engine::game::replay::{GameLog, Op, Recorder, ReplayError};
 
-    fn record() -> GameLog {
+    pub fn record() -> GameLog {
         let mut r = Recorder::new(host(&map()), BOMB_SCRIPT, 5, 50);
         r.input(Op::Join(Team::Alpha)).unwrap();
         r.input(Op::Join(Team::Beta)).unwrap();
@@ -266,3 +266,12 @@ mod replay {
         assert!(matches!(error, ReplayError::ScriptMismatch { .. }));
     }
 }
+
+#[test]
+fn golden_checkpoint_hashes_are_platform_independent() {
+    let log = replay::record();
+    let sample: Vec<u64> = [0, 59, 119].iter().map(|&i| log.checkpoints[i].1).collect();
+    assert_eq!(sample, GOLDEN);
+}
+
+const GOLDEN: [u64; 3] = [0xc7badb2d887d1931, 0xede3e44e60e4e6bd, 0x61760baeb52962ee];

@@ -574,6 +574,7 @@ pub struct GameHost {
     hooks: BTreeSet<String>,
     state: Dynamic,
     faults: u32,
+    fault_limit: Option<u32>,
     reloads: u32,
 }
 
@@ -693,6 +694,7 @@ impl GameHost {
             hooks,
             state: Dynamic::from(Map::new()),
             faults: 0,
+            fault_limit: None,
             reloads: 0,
         };
         for required in ["init", "tick"] {
@@ -708,6 +710,11 @@ impl GameHost {
     fn call(&mut self, name: &str, args: impl FuncArgs) -> Result<Dynamic, GameError> {
         if !self.hooks.contains(name) {
             return Ok(Dynamic::UNIT);
+        }
+        if self.disabled() {
+            return Err(script_error(
+                "gametype disabled after repeated script faults",
+            ));
         }
         let options = CallFnOptions::new()
             .eval_ast(false)
@@ -742,6 +749,17 @@ impl GameHost {
         self.faults
     }
 
+    /// Disables the gametype once `faults()` reaches `limit` (`None`, the default, never
+    /// disables). A disabled host runs no hooks: every call returns an error until
+    /// [`Self::reload_script`] succeeds, which clears the fault count.
+    pub fn set_fault_limit(&mut self, limit: Option<u32>) {
+        self.fault_limit = limit;
+    }
+
+    pub fn disabled(&self) -> bool {
+        self.fault_limit.is_some_and(|limit| self.faults >= limit)
+    }
+
     /// Hot reload for development. Call between ticks, never from inside a hook. The new
     /// source is compiled and checked for the required hooks first; on failure the old
     /// script keeps running and the error is returned. On success the AST is swapped,
@@ -759,6 +777,7 @@ impl GameHost {
         let old_version = self.reloads as i64;
         self.ast = ast;
         self.hooks = hooks;
+        self.faults = 0;
         self.reloads += 1;
         self.call("on_reload", (self.game.clone(), old_version))
             .map(drop)
