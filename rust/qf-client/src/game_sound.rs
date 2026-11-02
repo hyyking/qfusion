@@ -7,7 +7,7 @@ use qf_audio::{AudioDevice, AudioSystem};
 use qf_engine::content::bsp::Bsp;
 use qf_engine::content::vfs::Vfs;
 use qf_engine::simulation::entities::{MoverPose, TriggerEvent};
-use qf_engine::simulation::walk::ModeSimulation;
+use qf_engine::simulation::pmove::PredictedEvent;
 use qf_engine::sound::{
     MoverSounds, SOUND_TELEPORT_IN, SOUND_TELEPORT_OUT, SoundChannel, SoundEvent, SoundName,
     SoundPosition, SpeakerSet, sound_for_pmove_event, sounds_for_trigger_event,
@@ -102,7 +102,7 @@ impl GameSound {
         &mut self,
         eye: [f32; 3],
         yaw: f32,
-        simulation: &mut ModeSimulation,
+        movement: Vec<PredictedEvent>,
         triggers: &[TriggerEvent],
         movers: &[MoverPose],
         dt: f32,
@@ -112,7 +112,7 @@ impl GameSound {
         }
         let from = self.last_eye.replace(eye).unwrap_or(eye);
         self.system.set_listener(eye, yaw);
-        for event in simulation.take_events() {
+        for event in movement {
             self.system.handle_event(&sound_for_pmove_event(event));
         }
         for trigger in triggers {

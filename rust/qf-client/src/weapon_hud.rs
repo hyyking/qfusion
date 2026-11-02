@@ -1,12 +1,7 @@
 //! Weapon bar, current-weapon label and ammo counter.
 //!
 //! Pure drawing from a [`WeaponSnapshot`] taken from the local player's [`Inventory`]. The
-//! client still runs on `ModeSimulation` and has no inventory, so the snapshot stays `None`
-//! (nothing is drawn) until the client moves onto `Sim`; then `WeaponSnapshot::from_inventory`
-//! is fed once per frame, outside the sim.
-// Fed by the client once it runs on `Sim`.
-#![allow(dead_code)]
-
+//! client feeds `WeaponSnapshot::from_inventory` from `Sim` once per frame, outside the sim.
 use std::fmt::Write;
 
 use qf_engine::game::{Inventory, WeaponId};
