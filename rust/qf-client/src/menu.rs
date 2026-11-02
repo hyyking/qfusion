@@ -19,11 +19,24 @@ pub enum InputContext {
 pub enum UiAction {
     Resume,
     Quit,
+    /// Join a team or spectate.
+    SetTeam(TeamChoice),
+    OpenMenu(crate::loadout::MenuId),
+    SetPrimary([&'static str; 2]),
+    SetSecondary(&'static str),
     /// A gametype command (for example `primary` / `secondary`).
     Command {
         name: String,
         args: String,
     },
+}
+
+/// Where the local player plays. Spectator is a free-flying noclip view outside the match.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TeamChoice {
+    Alpha,
+    Beta,
+    Spectator,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,6 +114,26 @@ impl Menu {
                     label: "QUIT".into(),
                     action: UiAction::Quit,
                 },
+            ],
+        )
+    }
+
+    /// Team join screen; the current choice is marked with `>`.
+    pub fn team(current: TeamChoice) -> Self {
+        let item = |label: &str, choice: TeamChoice| MenuItem {
+            label: if choice == current {
+                format!("> {label}")
+            } else {
+                label.to_owned()
+            },
+            action: UiAction::SetTeam(choice),
+        };
+        Self::new(
+            "JOIN TEAM",
+            vec![
+                item("ALPHA", TeamChoice::Alpha),
+                item("BETA", TeamChoice::Beta),
+                item("SPECTATE", TeamChoice::Spectator),
             ],
         )
     }
@@ -293,6 +326,23 @@ mod tests {
         let mut canvas = Canvas::default();
         menu.draw(&SCREEN, None, &mut canvas);
         assert!(canvas.rects.is_empty());
+    }
+
+    #[test]
+    fn team_menu_marks_current_and_emits_choices() {
+        let mut menu = Menu::team(TeamChoice::Beta);
+        menu.open();
+        let labels: Vec<_> = menu.items().iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["ALPHA", "> BETA", "SPECTATE"]);
+        assert_eq!(
+            menu.key(MenuKey::Activate),
+            Some(UiAction::SetTeam(TeamChoice::Alpha))
+        );
+        menu.key(MenuKey::Up);
+        assert_eq!(
+            menu.key(MenuKey::Activate),
+            Some(UiAction::SetTeam(TeamChoice::Spectator))
+        );
     }
 
     #[test]
