@@ -5,6 +5,7 @@ mod bomb;
 mod game_sound;
 mod headless;
 mod hud;
+mod hud_layout;
 mod math;
 mod render;
 mod world;
@@ -102,6 +103,22 @@ impl App {
         );
         simulation.set_entities(entities);
         simulation.toggle_mode();
+        let layout = match hud_layout::layout_path() {
+            Some(path) => {
+                let (layout, error) = hud_layout::HudLayout::load(&path);
+                if let Some(error) = error {
+                    eprintln!("hud layout ignored: {error}");
+                }
+                layout
+            }
+            None => hud_layout::HudLayout::default(),
+        };
+        let mut hud_ups = hud::UpsCounter::new();
+        hud_ups.set_layout(layout.get(hud_layout::UPS));
+        let mut hud_fps = hud::FpsCounter::new();
+        hud_fps.set_layout(layout.get(hud_layout::FPS));
+        let mut hud_record = hud::RecordIndicator::new();
+        hud_record.set_layout(layout.get(hud_layout::RECORD));
         let mut app = Self {
             window: None,
             renderer: None,
@@ -115,9 +132,9 @@ impl App {
             simulation,
             pressed_keys: HashSet::new(),
             right_mouse_down: false,
-            hud_ups: hud::UpsCounter::new(),
-            hud_fps: hud::FpsCounter::new(),
-            hud_record: hud::RecordIndicator::new(),
+            hud_ups,
+            hud_fps,
+            hud_record,
             recorder: None,
             record_path: None,
             map,

@@ -8,6 +8,10 @@
 
 use std::fmt::Write;
 
+use serde::{Deserialize, Serialize};
+
+use crate::hud_layout::{self, ElementLayout, HudLayout};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Screen {
     pub width: f32,
@@ -16,21 +20,21 @@ pub struct Screen {
     pub scale: f32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum HAnchor {
     Left,
     Center,
     Right,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum VAnchor {
     Top,
     Middle,
     Bottom,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Anchor {
     pub horizontal: HAnchor,
     pub vertical: VAnchor,
@@ -195,23 +199,23 @@ pub trait HudElement {
 /// Units-per-second counter. The shown number refreshes at a fixed rate so it is
 /// readable, and its text buffer is reused.
 pub struct UpsCounter {
-    anchor: Anchor,
+    layout: ElementLayout,
     shown: u32,
     since_refresh: f32,
     text: String,
 }
 
 impl UpsCounter {
+    pub fn set_layout(&mut self, layout: ElementLayout) {
+        self.layout = layout;
+    }
+
     pub const REFRESH_SECONDS: f32 = 0.1;
     const PIXEL: f32 = 3.0;
 
     pub fn new() -> Self {
         Self {
-            anchor: Anchor {
-                horizontal: HAnchor::Center,
-                vertical: VAnchor::Bottom,
-                margin: [0.0, 48.0],
-            },
+            layout: HudLayout::default_for(hud_layout::UPS),
             shown: 0,
             since_refresh: Self::REFRESH_SECONDS,
             text: String::with_capacity(8),
@@ -242,12 +246,15 @@ impl HudElement for UpsCounter {
     }
 
     fn draw(&self, screen: &Screen, canvas: &mut Canvas) {
-        let pixel = Self::PIXEL * screen.scale;
+        if !self.layout.enabled {
+            return;
+        }
+        let pixel = Self::PIXEL * self.layout.scale * screen.scale;
         let number = text_size(self.text.chars().count(), pixel);
         let label = text_size(3, pixel * 0.5);
         let gap = pixel;
         let size = [number[0].max(label[0]), number[1] + gap + label[1]];
-        let [x, y] = self.anchor.place(screen, size);
+        let [x, y] = self.layout.anchor.place(screen, size);
         let white = [1.0, 1.0, 1.0, 1.0];
         canvas.shadowed_text(
             &self.text,
@@ -267,7 +274,7 @@ impl HudElement for UpsCounter {
 /// Frames-per-second counter in the top-right corner. The shown value is the average over
 /// [`FpsCounter::WINDOW_SECONDS`] so it stays readable, drawn like [`UpsCounter`].
 pub struct FpsCounter {
-    anchor: Anchor,
+    layout: ElementLayout,
     shown: u32,
     frames: u32,
     elapsed: f32,
@@ -275,16 +282,16 @@ pub struct FpsCounter {
 }
 
 impl FpsCounter {
+    pub fn set_layout(&mut self, layout: ElementLayout) {
+        self.layout = layout;
+    }
+
     pub const WINDOW_SECONDS: f32 = 0.5;
     const PIXEL: f32 = 3.0;
 
     pub fn new() -> Self {
         Self {
-            anchor: Anchor {
-                horizontal: HAnchor::Right,
-                vertical: VAnchor::Top,
-                margin: [16.0, 16.0],
-            },
+            layout: HudLayout::default_for(hud_layout::FPS),
             shown: 0,
             frames: 0,
             elapsed: 0.0,
@@ -321,12 +328,15 @@ impl HudElement for FpsCounter {
     }
 
     fn draw(&self, screen: &Screen, canvas: &mut Canvas) {
-        let pixel = Self::PIXEL * screen.scale;
+        if !self.layout.enabled {
+            return;
+        }
+        let pixel = Self::PIXEL * self.layout.scale * screen.scale;
         let number = text_size(self.text.chars().count(), pixel);
         let label = text_size(3, pixel * 0.5);
         let gap = pixel;
         let size = [number[0].max(label[0]), number[1] + gap + label[1]];
-        let [x, y] = self.anchor.place(screen, size);
+        let [x, y] = self.layout.anchor.place(screen, size);
         canvas.shadowed_text(
             &self.text,
             [x + (size[0] - number[0]) * 0.5, y],
@@ -356,23 +366,23 @@ pub enum RecordStatus {
 /// Movement-recording indicator in the top-left corner: a red dot with the tick count while
 /// recording, then a short status message when a recording is saved or refused.
 pub struct RecordIndicator {
-    anchor: Anchor,
+    layout: ElementLayout,
     status: RecordStatus,
     message_left: f32,
     text: String,
 }
 
 impl RecordIndicator {
+    pub fn set_layout(&mut self, layout: ElementLayout) {
+        self.layout = layout;
+    }
+
     pub const MESSAGE_SECONDS: f32 = 4.0;
     const PIXEL: f32 = 3.0;
 
     pub fn new() -> Self {
         Self {
-            anchor: Anchor {
-                horizontal: HAnchor::Left,
-                vertical: VAnchor::Top,
-                margin: [16.0, 16.0],
-            },
+            layout: HudLayout::default_for(hud_layout::RECORD),
             status: RecordStatus::Idle,
             message_left: 0.0,
             text: String::with_capacity(16),
@@ -415,7 +425,10 @@ impl HudElement for RecordIndicator {
     }
 
     fn draw(&self, screen: &Screen, canvas: &mut Canvas) {
-        let pixel = Self::PIXEL * screen.scale;
+        if !self.layout.enabled {
+            return;
+        }
+        let pixel = Self::PIXEL * self.layout.scale * screen.scale;
         let (dot, color) = match self.status {
             RecordStatus::Idle => return,
             RecordStatus::Recording { .. } => (true, [1.0, 0.2, 0.2, 1.0]),
@@ -423,7 +436,7 @@ impl HudElement for RecordIndicator {
         };
         let text = text_size(self.text.chars().count(), pixel);
         let dot_size = if dot { text[1] + pixel * 2.0 } else { 0.0 };
-        let [x, y] = self.anchor.place(screen, [dot_size + text[0], text[1]]);
+        let [x, y] = self.layout.anchor.place(screen, [dot_size + text[0], text[1]]);
         if dot {
             canvas.rects.push(Rect {
                 x,
