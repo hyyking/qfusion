@@ -148,7 +148,6 @@ impl GameEvent {
 
 struct Core {
     now: u64,
-    roster: Roster,
     sim: Sim,
     models: Arc<dyn GameModels>,
     entities: rhai::Array,
@@ -168,6 +167,10 @@ impl Core {
             end,
             crate::simulation::pmove::CONTENTS_SOLID,
         )
+    }
+
+    fn roster(&mut self) -> Roster<'_> {
+        Roster::new(self.sim.map_mut().world_mut())
     }
 
     /// Runs the map's due thinks and forwards use-chain events to the script queue.
@@ -206,7 +209,7 @@ impl Game {
         let mut core = self.core();
         let player = usize::try_from(id)
             .ok()
-            .and_then(|id| core.roster.get_mut(id))
+            .and_then(|id| core.roster().get_mut(id))
             .ok_or_else(|| format!("no such player {id}"))?;
         Ok(f(player))
     }
@@ -389,10 +392,10 @@ fn register_api(engine: &mut Engine) {
          falloff: bool|
          -> ScriptResult<rhai::Array> {
             let origin = to_vec3(&origin)?;
-            let core = g.core();
+            let mut core = g.core();
             let mut hits = rhai::Array::new();
-            for slot in 0..core.roster.len() {
-                let Some(player) = core.roster.get(slot).filter(|p| p.alive) else {
+            for slot in 0..core.roster().len() {
+                let Some(player) = core.roster().get(slot).filter(|p| p.alive) else {
                     continue;
                 };
                 let target = add(player.origin, [0.0, 0.0, 8.0]);
@@ -448,7 +451,9 @@ fn register_api(engine: &mut Engine) {
             Ok(g.core().world_bounds.contains(to_vec3(&point)?))
         },
     );
-    engine.register_fn("player_count", |g: &mut Game| g.core().roster.len() as i64);
+    engine.register_fn("player_count", |g: &mut Game| {
+        g.core().roster().len() as i64
+    });
     engine.register_fn("team", |g: &mut Game, id: i64| {
         g.player_mut(id, |p| p.team.index() as i64)
     });
@@ -576,7 +581,7 @@ fn register_api(engine: &mut Engine) {
         },
     );
     engine.register_fn("set_movement_locked", |g: &mut Game, locked: bool| {
-        g.core().roster.set_movement_locked(locked);
+        g.core().roster().set_movement_locked(locked);
     });
     engine.register_fn("emit", |g: &mut Game, kind: &str, data: Map| {
         let fields = data
@@ -739,13 +744,14 @@ impl GameHost {
         register_api(&mut engine);
         let ast = engine.compile(script).map_err(script_error)?;
         let hooks = ast.iter_functions().map(|f| f.name.to_string()).collect();
+        let mut sim = Sim::new(
+            MapEntities::spawn_for_gametype(entities, &*brush, &Gametype::bomb()),
+            seed,
+        );
+        Roster::init(sim.map_mut().world_mut());
         let game = Game(Arc::new(Mutex::new(Core {
             now: 0,
-            roster: Roster::new(),
-            sim: Sim::new(
-                MapEntities::spawn_for_gametype(entities, &*brush, &Gametype::bomb()),
-                seed,
-            ),
+            sim,
             models: brush,
             entities: entities
                 .iter()
@@ -881,13 +887,13 @@ impl GameHost {
         }
         for id in 0..self.player_count() {
             let values = self.compute_hud(id)?;
-            self.game.core().roster.publish_hud(id, values);
+            self.game.core().roster().publish_hud(id, values);
         }
         Ok(())
     }
 
     pub fn add_player(&mut self, team: Team) -> Result<usize, GameError> {
-        let id = self.game.core().roster.add(team);
+        let id = self.game.core().roster().add(team);
         self.call("on_player_joined", (self.game.clone(), id as i64))
             .map(drop)?;
         Ok(id)
@@ -962,7 +968,7 @@ impl GameHost {
         pitch: f32,
     ) {
         let mut core = self.game.core();
-        let player = core.roster.get_mut(id).expect("no such player");
+        let player = core.roster().get_mut(id).expect("no such player");
         if player.alive {
             player.origin = origin;
             player.velocity = velocity;
@@ -976,7 +982,7 @@ impl GameHost {
     }
 
     pub fn movement_locked(&self) -> bool {
-        self.game.core().roster.movement_locked()
+        self.game.core().roster().movement_locked()
     }
 
     pub fn now_ms(&self) -> u64 {
@@ -988,7 +994,7 @@ impl GameHost {
     /// (slot order; `Map` keys sort). Equal hashes mean equal games; replay checkpoints
     /// compare it. `GameEvent`s are outputs, not state, and are not hashed.
     pub fn state_hash(&self) -> u64 {
-        let core = self.game.core();
+        let mut core = self.game.core();
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
         let mut feed = |bytes: &[u8]| {
             for byte in bytes {
@@ -997,10 +1003,10 @@ impl GameHost {
         };
         feed(&core.now.to_le_bytes());
         feed(&core.rng.state().to_le_bytes());
-        feed(&[u8::from(core.roster.movement_locked())]);
+        feed(&[u8::from(core.roster().movement_locked())]);
         feed(&core.sim.state_hash().to_le_bytes());
-        for slot in 0..core.roster.len() {
-            if let Some(player) = core.roster.get(slot) {
+        for slot in 0..core.roster().len() {
+            if let Some(player) = core.roster().get(slot) {
                 feed(format!("{player:?}").as_bytes());
             }
         }
@@ -1011,20 +1017,20 @@ impl GameHost {
     pub fn player(&self, id: usize) -> Player {
         self.game
             .core()
-            .roster
+            .roster()
             .get(id)
             .expect("no such player")
             .clone()
     }
 
     pub fn player_count(&self) -> usize {
-        self.game.core().roster.len()
+        self.game.core().roster().len()
     }
 
     /// Gametype-defined HUD values for one player as published at the end of the last
     /// tick (see the script's `hud` hook). Computed on demand before the first tick.
     pub fn hud(&mut self, id: usize) -> Result<BTreeMap<String, Value>, GameError> {
-        if let Some(values) = self.game.core().roster.hud(id) {
+        if let Some(values) = self.game.core().roster().hud(id) {
             return Ok(values.clone());
         }
         self.compute_hud(id)

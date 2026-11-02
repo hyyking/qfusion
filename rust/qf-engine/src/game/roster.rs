@@ -26,56 +26,61 @@ struct MovementLock(bool);
 #[derive(Resource, Debug, Default)]
 struct HudState(BTreeMap<usize, BTreeMap<String, Value>>);
 
+/// Slot -> entity, dense and stable.
+#[derive(Resource, Debug, Default)]
+struct SlotIndex(Vec<Entity>);
+
+/// The gametype's view of the players stored in the shared entity world. Create one per
+/// access with [`Roster::new`] (cheap); it borrows the world.
 #[derive(Debug)]
-pub struct Roster {
-    world: World,
-    by_slot: Vec<Entity>,
+pub struct Roster<'w> {
+    world: &'w mut World,
 }
 
-impl Default for Roster {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Roster {
-    /// Movement starts locked until the script opens the round.
-    pub fn new() -> Self {
-        let mut world = World::new();
+impl<'w> Roster<'w> {
+    /// Registers the roster resources in `world` once. Movement starts locked until the
+    /// script opens the round.
+    pub fn init(world: &mut World) {
         world.insert_resource(MovementLock(true));
         world.insert_resource(HudState::default());
-        Self {
-            world,
-            by_slot: Vec::new(),
-        }
+        world.insert_resource(SlotIndex::default());
+    }
+
+    pub fn new(world: &'w mut World) -> Self {
+        Self { world }
     }
 
     pub fn len(&self) -> usize {
-        self.by_slot.len()
+        self.world.resource::<SlotIndex>().0.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.by_slot.is_empty()
+        self.len() == 0
     }
 
     /// Adds a player and returns its slot.
     pub fn add(&mut self, team: Team) -> usize {
-        let slot = self.by_slot.len();
+        let slot = self.len();
         let entity = self
             .world
             .spawn((Slot(slot), GamePlayer(Player::new(team))))
             .id();
-        self.by_slot.push(entity);
+        self.world.resource_mut::<SlotIndex>().0.push(entity);
         slot
     }
 
-    pub fn get(&self, slot: usize) -> Option<&Player> {
-        let entity = *self.by_slot.get(slot)?;
-        self.world.get::<GamePlayer>(entity).map(|p| &p.0)
+    fn entity(&self, slot: usize) -> Option<Entity> {
+        self.world.resource::<SlotIndex>().0.get(slot).copied()
     }
 
-    pub fn get_mut(&mut self, slot: usize) -> Option<&mut Player> {
-        let entity = *self.by_slot.get(slot)?;
+    pub fn get(self, slot: usize) -> Option<&'w Player> {
+        let entity = self.entity(slot)?;
+        let world: &'w World = self.world;
+        world.get::<GamePlayer>(entity).map(|p| &p.0)
+    }
+
+    pub fn get_mut(self, slot: usize) -> Option<&'w mut Player> {
+        let entity = self.entity(slot)?;
         self.world
             .get_mut::<GamePlayer>(entity)
             .map(|p| &mut p.into_inner().0)
@@ -89,37 +94,43 @@ impl Roster {
         self.world.resource_mut::<HudState>().0.insert(slot, values);
     }
 
-    pub fn hud(&self, slot: usize) -> Option<&BTreeMap<String, Value>> {
-        self.world.resource::<HudState>().0.get(&slot)
+    pub fn hud(self, slot: usize) -> Option<&'w BTreeMap<String, Value>> {
+        let world: &'w World = self.world;
+        world.resource::<HudState>().0.get(&slot)
     }
 
     pub fn set_movement_locked(&mut self, locked: bool) {
         self.world.resource_mut::<MovementLock>().0 = locked;
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn world() -> World {
+        let mut world = World::new();
+        Roster::init(&mut world);
+        world
+    }
+
     #[test]
     fn slots_are_dense_and_stable() {
-        let mut roster = Roster::new();
-        assert!(roster.is_empty());
-        assert_eq!(roster.add(Team::Alpha), 0);
-        assert_eq!(roster.add(Team::Beta), 1);
-        roster.get_mut(0).unwrap().health = 42.0;
-        assert_eq!(roster.len(), 2);
-        assert_eq!(roster.get(0).unwrap().health, 42.0);
-        assert_eq!(roster.get(1).unwrap().team, Team::Beta);
-        assert!(roster.get(2).is_none());
+        let mut world = world();
+        assert!(Roster::new(&mut world).is_empty());
+        assert_eq!(Roster::new(&mut world).add(Team::Alpha), 0);
+        assert_eq!(Roster::new(&mut world).add(Team::Beta), 1);
+        Roster::new(&mut world).get_mut(0).unwrap().health = 42.0;
+        assert_eq!(Roster::new(&mut world).len(), 2);
+        assert_eq!(Roster::new(&mut world).get(0).unwrap().health, 42.0);
+        assert_eq!(Roster::new(&mut world).get(1).unwrap().team, Team::Beta);
+        assert!(Roster::new(&mut world).get(2).is_none());
     }
 
     #[test]
     fn movement_starts_locked() {
-        let mut roster = Roster::new();
-        assert!(roster.movement_locked());
-        roster.set_movement_locked(false);
-        assert!(!roster.movement_locked());
+        let mut world = world();
+        assert!(Roster::new(&mut world).movement_locked());
+        Roster::new(&mut world).set_movement_locked(false);
+        assert!(!Roster::new(&mut world).movement_locked());
     }
 }
