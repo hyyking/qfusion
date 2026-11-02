@@ -108,6 +108,10 @@ impl Bsp {
             return Ok(result);
         }
 
+        if start == end {
+            return Ok(self.position_test(start, mins, maxs, contents_mask, result));
+        }
+
         let extents = std::array::from_fn(|axis| (-mins[axis]).max(maxs[axis]));
         let mut seen_brushes = vec![false; self.brushes.len()];
         let mut seen_patches = vec![false; self.patches.len()];
@@ -232,6 +236,104 @@ impl Bsp {
             result.end_position = lerp(start, end, result.fraction);
         }
         Ok(result)
+    }
+
+    /// The legacy `start == end` special case: no sweep, just whether the box overlaps solid
+    /// geometry. Every leaf within one unit of the box is tested and touching faces count as
+    /// inside, so a box flush against a wall is start-solid (a swept trace would skip the leaf).
+    fn position_test(
+        &self,
+        origin: [f32; 3],
+        mins: [f32; 3],
+        maxs: [f32; 3],
+        contents_mask: u32,
+        mut result: Trace,
+    ) -> Trace {
+        let box_mins: [f32; 3] = std::array::from_fn(|axis| origin[axis] + mins[axis] - 1.0);
+        let box_maxs: [f32; 3] = std::array::from_fn(|axis| origin[axis] + maxs[axis] + 1.0);
+        let center: [f32; 3] = std::array::from_fn(|axis| (box_mins[axis] + box_maxs[axis]) * 0.5);
+        let half: [f32; 3] = std::array::from_fn(|axis| (box_maxs[axis] - box_mins[axis]) * 0.5);
+
+        let mut stack = vec![0i32];
+        let mut leaves = Vec::new();
+        while let Some(node) = stack.pop() {
+            if node < 0 {
+                leaves.push((-i64::from(node) - 1) as usize);
+                continue;
+            }
+            let node = &self.nodes[node as usize];
+            let plane = &self.planes[node.plane];
+            let distance = dot(plane.normal, center) - plane.dist;
+            let offset = dot_abs(plane.normal, half);
+            if distance >= offset {
+                stack.push(node.children[0]);
+            } else if distance < -offset {
+                stack.push(node.children[1]);
+            } else {
+                stack.push(node.children[1]);
+                stack.push(node.children[0]);
+            }
+        }
+
+        let mut seen_brushes = vec![false; self.brushes.len()];
+        let mut seen_patches = vec![false; self.patches.len()];
+        let solid = |planes: &mut dyn Iterator<Item = &Plane>| {
+            for plane in planes {
+                let support = support_point(origin, mins, maxs, plane.normal);
+                if dot(plane.normal, support) > plane.dist {
+                    return false;
+                }
+            }
+            true
+        };
+        for leaf_index in leaves {
+            let leaf = &self.leafs[leaf_index];
+            for &brush_index in &self.leaf_brushes
+                [leaf.first_leaf_brush..leaf.first_leaf_brush + leaf.num_leaf_brushes]
+            {
+                if std::mem::replace(&mut seen_brushes[brush_index], true) {
+                    continue;
+                }
+                let brush = &self.brushes[brush_index];
+                if brush.contents as u32 & contents_mask == 0 || brush.num_sides == 0 {
+                    continue;
+                }
+                let sides = &self.brush_sides[brush.first_side..brush.first_side + brush.num_sides];
+                if solid(&mut sides.iter().map(|side| &self.planes[side.plane])) {
+                    return Self::inside(result, origin, brush.contents as u32);
+                }
+            }
+            for &face_index in
+                &self.leaf_faces[leaf.first_leaf_face..leaf.first_leaf_face + leaf.num_leaf_faces]
+            {
+                let Some(patch_index) = self.face_patch[face_index] else {
+                    continue;
+                };
+                if std::mem::replace(&mut seen_patches[patch_index], true) {
+                    continue;
+                }
+                let patch = &self.patches[patch_index];
+                if patch.contents as u32 & contents_mask == 0 {
+                    continue;
+                }
+                for facet in &patch.facets {
+                    if !facet.planes.is_empty() && solid(&mut facet.planes.iter()) {
+                        return Self::inside(result, origin, patch.contents as u32);
+                    }
+                }
+            }
+        }
+        result.end_position = origin;
+        result
+    }
+
+    fn inside(mut trace: Trace, origin: [f32; 3], contents: u32) -> Trace {
+        trace.start_solid = true;
+        trace.all_solid = true;
+        trace.fraction = 0.0;
+        trace.contents = contents;
+        trace.end_position = origin;
+        trace
     }
 
     /// Tests whether an absolute-coordinate box touches an inline brush model.
@@ -571,6 +673,30 @@ mod tests {
             trace.end_position = lerp(start, end, trace.fraction);
         }
         trace
+    }
+
+    #[test]
+    fn zero_length_trace_flush_against_wall_is_start_solid() {
+        let basewsw = std::env::var("WARSOW_BASEWSW")
+            .unwrap_or_else(|_| r"C:\Program Files (x86)\Warsow 2.1\basewsw".into());
+        let pk3 = std::path::Path::new(&basewsw).join("map_wbomb1.pk3");
+        if !pk3.exists() {
+            eprintln!("SKIPPED: {} not found", pk3.display());
+            return;
+        }
+        let data = super::super::read_pk3_entry(&pk3, "maps/wbomb1.bsp").unwrap();
+        let bsp = Bsp::parse(&data).unwrap();
+        // Recorded wbomb1 player box touching the x = -1200 wall: legacy position test is solid.
+        let at = [-1200.0, 245.77448, 252.97185];
+        let flush = bsp
+            .trace(at, at, [-16.0, -16.0, -24.0], [16.0, 16.0, 40.0], 1)
+            .unwrap();
+        assert!(flush.start_solid && flush.all_solid && flush.fraction == 0.0);
+        let clear = [-1199.875, 245.77448, 252.97185];
+        let free = bsp
+            .trace(clear, clear, [-16.0, -16.0, -24.0], [16.0, 16.0, 40.0], 1)
+            .unwrap();
+        assert!(!free.start_solid);
     }
 
     #[test]

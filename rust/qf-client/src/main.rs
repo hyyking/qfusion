@@ -21,14 +21,15 @@ use qf_engine::game::Team;
 use qf_engine::simulation::bsp_world::BspWorld;
 use qf_engine::simulation::entities::{MapEntities, TriggerEvent};
 use qf_engine::simulation::player::NoclipPlayer;
-use qf_engine::simulation::walk::{ModeSimulation, WalkCommand};
+use qf_engine::simulation::recording::{MapIdentity, Recorder};
+use qf_engine::simulation::walk::{ModeSimulation, MovementMode, WalkCommand};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
-const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen] [--screenshot out.png [--shot-eye x,y,z] [--shot-angles p,y,r] [--shot-size WxH]]";
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen] [--record FILE] [--screenshot out.png [--shot-eye x,y,z] [--shot-angles p,y,r] [--shot-size WxH]]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
 
 /// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
 /// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
@@ -56,6 +57,10 @@ struct App {
     pressed_keys: HashSet<KeyCode>,
     right_mouse_down: bool,
     hud_ups: hud::UpsCounter,
+    hud_record: hud::RecordIndicator,
+    recorder: Option<Recorder>,
+    record_path: Option<PathBuf>,
+    map: MapIdentity,
     hud_canvas: hud::Canvas,
     sensitivity: f32,
     mouse_grabbed: bool,
@@ -69,6 +74,7 @@ struct App {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         bsp: Arc<Bsp>,
         bomb: Option<bomb::BombSession>,
@@ -77,6 +83,8 @@ impl App {
         sensitivity: f32,
         game_dirs: Vec<PathBuf>,
         map_pk3: Option<PathBuf>,
+        map: MapIdentity,
+        record_path: Option<PathBuf>,
     ) -> Self {
         let mut simulation = ModeSimulation::new(player);
         let entities = MapEntities::spawn(&bsp.parsed_entities, &*bsp);
@@ -107,6 +115,10 @@ impl App {
             pressed_keys: HashSet::new(),
             right_mouse_down: false,
             hud_ups: hud::UpsCounter::new(),
+            hud_record: hud::RecordIndicator::new(),
+            recorder: None,
+            record_path: None,
+            map,
             hud_canvas: hud::Canvas::default(),
             sensitivity,
             mouse_grabbed: false,
@@ -116,7 +128,71 @@ impl App {
             fullscreen: false,
         };
         app.start_audio();
+        if let Some(path) = record_path {
+            app.start_recording(Some(path));
+        }
         app
+    }
+
+    /// Starts recording walking ticks. Recording only copies each tick's command and result,
+    /// so it cannot change the simulation.
+    fn start_recording(&mut self, path: Option<PathBuf>) {
+        let MovementMode::Walk(player) = self.simulation.mode() else {
+            self.hud_record.show_message("REC NEED WALK");
+            eprintln!("recording needs walk mode");
+            return;
+        };
+        // Entities are installed, so live ticks take the trigger-aware path.
+        let generator = concat!("qf-client ", env!("CARGO_PKG_VERSION"));
+        self.recorder = Some(Recorder::start(
+            self.map.clone(),
+            generator,
+            125,
+            self.simulation.entities().is_some(),
+            &player.state,
+        ));
+        self.record_path = Some(path.unwrap_or_else(default_recording_path));
+        self.simulation.set_tick_logging(true);
+        self.hud_record.set_recording(0);
+        println!("recording started");
+    }
+
+    /// Drains logged ticks into the recorder; stops and saves if the player left walk mode.
+    fn collect_recorded_ticks(&mut self) {
+        let Some(recorder) = &mut self.recorder else {
+            return;
+        };
+        for entry in self.simulation.take_tick_log() {
+            recorder.push(&entry);
+        }
+        let ticks = recorder.tick_count();
+        if self.simulation.mode().is_walking() {
+            self.hud_record.set_recording(ticks);
+        } else {
+            self.stop_recording();
+        }
+    }
+
+    fn stop_recording(&mut self) {
+        self.simulation.set_tick_logging(false);
+        let (Some(recorder), Some(path)) = (self.recorder.take(), self.record_path.take()) else {
+            return;
+        };
+        let recording = recorder.finish();
+        match std::fs::write(&path, recording.to_text()) {
+            Ok(()) => {
+                println!(
+                    "saved recording: {} ticks -> {}",
+                    recording.ticks.len(),
+                    path.display()
+                );
+                self.hud_record.show_message("REC SAVED");
+            }
+            Err(e) => {
+                eprintln!("failed to save recording {}: {e}", path.display());
+                self.hud_record.show_message("REC FAILED");
+            }
+        }
     }
 
     fn start_audio(&mut self) {
@@ -284,6 +360,13 @@ impl ApplicationHandler for App {
                                 (self.sensitivity - SENSITIVITY_STEP).max(MIN_SENSITIVITY);
                             println!("sensitivity {}", self.sensitivity);
                         }
+                        Key::Named(NamedKey::F9) => {
+                            if self.recorder.is_some() {
+                                self.stop_recording();
+                            } else {
+                                self.start_recording(None);
+                            }
+                        }
                         Key::Character(ref key) if key.eq_ignore_ascii_case("b") => {
                             self.play_sound()
                         }
@@ -389,6 +472,7 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                self.collect_recorded_ticks();
                 let trigger_events = self.simulation.drain_trigger_events();
                 let teleported = trigger_events
                     .iter()
@@ -426,7 +510,12 @@ impl ApplicationHandler for App {
                         frame_seconds: elapsed.as_secs_f32(),
                     });
                     self.hud_canvas.clear();
+                    self.hud_record.update(&hud::HudState {
+                        velocity: [0.0; 3],
+                        frame_seconds: elapsed.as_secs_f32(),
+                    });
                     self.hud_ups.draw(&screen, &mut self.hud_canvas);
+                    self.hud_record.draw(&screen, &mut self.hud_canvas);
                     if let Some(bomb) = &self.bomb {
                         bomb.hud.draw(&screen, &mut self.hud_canvas);
                     }
@@ -444,14 +533,25 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.stop_recording();
+    }
 }
 
 /// The simulation only stores view angles when a 125 Hz tick runs, so adopting them on every
-/// frame would discard the frame's mouse/arrow delta whenever no tick ran. Only teleporters
+/// frame would discard the frame's mouse/arrow delta whenever no tick ran. Only teleporters,
 /// and gametype spawns, which rewrite the look direction inside the simulation, override the
 /// client-owned angles.
 fn view_after_frame(client: [f32; 3], simulation: [f32; 3], rewritten: bool) -> [f32; 3] {
     if rewritten { simulation } else { client }
+}
+
+fn default_recording_path() -> PathBuf {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    PathBuf::from(format!("qf-recording-{seconds}.qfrec"))
 }
 
 struct Screenshot {
@@ -469,6 +569,8 @@ struct Options {
     sensitivity: f32,
     game_dirs: Vec<PathBuf>,
     map_pk3: Option<PathBuf>,
+    map: MapIdentity,
+    record_path: Option<PathBuf>,
     screenshot: Option<Screenshot>,
     fullscreen: bool,
 }
@@ -513,6 +615,7 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
 
     let mut entry = String::from("maps/wbomb1.bsp");
     let mut sensitivity = DEFAULT_SENSITIVITY;
+    let mut record_path = None;
     let mut game_dirs = Vec::new();
     let mut team = Team::Alpha;
     let mut freeplay = false;
@@ -569,6 +672,11 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
                     .filter(|v| v.is_finite() && *v > 0.0)
                     .ok_or("--sensitivity requires a positive number")?
             }
+            "--record" => {
+                record_path = Some(PathBuf::from(
+                    args.next().ok_or("--record requires a file")?,
+                ))
+            }
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
@@ -580,6 +688,15 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
         std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?
     };
     let bsp = Bsp::parse(&data).map_err(|e| e.to_string())?;
+    let is_pk3 = input.to_lowercase().ends_with(".pk3");
+    let (map_entry, map_name) = if is_pk3 {
+        let stem = Path::new(&entry).file_stem().and_then(|s| s.to_str());
+        (entry.clone(), stem.unwrap_or("map").to_string())
+    } else {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("map");
+        (format!("maps/{stem}.bsp"), stem.to_string())
+    };
+    let map = MapIdentity::of_bsp(&map_name, &map_entry, &data);
     let player = NoclipPlayer::spawn(&bsp.parsed_entities).map_err(|e| e.to_string())?;
     let mesh = bsp.model_mesh(0).map_err(|e| e.to_string())?;
 
@@ -613,6 +730,8 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
             .to_lowercase()
             .ends_with(".pk3")
             .then(|| path.to_path_buf()),
+        map,
+        record_path,
         screenshot,
     }))
 }
@@ -665,6 +784,8 @@ fn main() {
         options.sensitivity,
         options.game_dirs,
         options.map_pk3,
+        options.map,
+        options.record_path,
     );
     app.fullscreen = options.fullscreen;
     if let Err(e) = event_loop.run_app(&mut app) {

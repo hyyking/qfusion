@@ -3,8 +3,8 @@ use std::time::Duration;
 use super::entities::{BrushModels, MapEntities, MoverWorld, PushedPlayer, TriggerEvent};
 use super::player::{NoclipPlayer, PlayerCommand, StepError, TICK_DURATION};
 use super::pmove::{
-    BUTTON_SPECIAL, PmType, PmoveCommand, PmoveRules, PmoveState, PmoveTouch, PmoveWorld,
-    PredictedEvent, angle_to_short, pmove, pmove_with_touch,
+    BUTTON_SPECIAL, PmType, PmoveCommand, PmoveResult, PmoveRules, PmoveState, PmoveTouch,
+    PmoveWorld, PredictedEvent, angle_to_short, pmove, pmove_with_touch,
 };
 
 pub const MOVE_AXIS: f32 = 127.0;
@@ -81,6 +81,16 @@ impl WalkPlayer {
         command: WalkCommand,
         touch: Option<&mut dyn PmoveTouch>,
     ) -> Result<(), StepError> {
+        self.step_with_outcome(world, command, touch).map(drop)
+    }
+
+    /// `step_with_touch` that also returns the exact movement command and result of the tick.
+    pub fn step_with_outcome<W: PmoveWorld>(
+        &mut self,
+        world: &W,
+        command: WalkCommand,
+        touch: Option<&mut dyn PmoveTouch>,
+    ) -> Result<TickOutcome, StepError> {
         let values = [command.forward, command.right, command.up]
             .into_iter()
             .chain(command.view_angles);
@@ -112,11 +122,30 @@ impl WalkPlayer {
             }
             None => pmove(world, &self.rules, &mut self.state, &pm_command),
         };
-        self.events.extend(result.events);
+        self.events.extend(result.events.iter().cloned());
         self.ground_entity = result.ground_entity;
-        self.touched = result.touch_entities;
-        Ok(())
+        self.touched = result.touch_entities.clone();
+        Ok(TickOutcome {
+            command: pm_command,
+            result,
+        })
     }
+}
+
+/// What one simulation tick fed to and got back from `pmove`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TickOutcome {
+    pub command: PmoveCommand,
+    pub result: PmoveResult,
+}
+
+/// One logged walking tick: the command, result and resulting state, plus how many
+/// map trigger events fired during it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TickLogEntry {
+    pub outcome: TickOutcome,
+    pub state: PmoveState,
+    pub trigger_events: usize,
 }
 
 /// Which movement implementation drives the local player.
@@ -163,15 +192,17 @@ impl MovementMode {
         world: &W,
         command: WalkCommand,
         touch: Option<&mut dyn PmoveTouch>,
-    ) -> Result<(), StepError> {
+    ) -> Result<Option<TickOutcome>, StepError> {
         match self {
-            Self::Noclip(player) => player.step(PlayerCommand {
-                forward: command.forward,
-                right: command.right,
-                up: command.up,
-                view_angles: command.view_angles,
-            }),
-            Self::Walk(player) => player.step_with_touch(world, command, touch),
+            Self::Noclip(player) => player
+                .step(PlayerCommand {
+                    forward: command.forward,
+                    right: command.right,
+                    up: command.up,
+                    view_angles: command.view_angles,
+                })
+                .map(|()| None),
+            Self::Walk(player) => player.step_with_outcome(world, command, touch).map(Some),
         }
     }
 }
@@ -184,6 +215,7 @@ pub struct ModeSimulation {
     entities: Option<MapEntities>,
     ticks: i64,
     trigger_events: Vec<TriggerEvent>,
+    tick_log: Option<Vec<TickLogEntry>>,
 }
 
 impl ModeSimulation {
@@ -194,7 +226,22 @@ impl ModeSimulation {
             entities: None,
             ticks: 0,
             trigger_events: Vec::new(),
+            tick_log: None,
         }
+    }
+
+    /// Starts or stops logging walking ticks. Logging only copies tick results, so it
+    /// never changes the simulation.
+    pub fn set_tick_logging(&mut self, enabled: bool) {
+        self.tick_log = enabled.then(Vec::new);
+    }
+
+    /// Takes the walking ticks logged since the last call.
+    pub fn take_tick_log(&mut self) -> Vec<TickLogEntry> {
+        self.tick_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     /// Installs the map entities that act on the walking player.
@@ -256,6 +303,21 @@ impl ModeSimulation {
         self.advance(world, Some(models), elapsed, command)
     }
 
+    fn log_tick(
+        log: &mut Option<Vec<TickLogEntry>>,
+        mode: &MovementMode,
+        outcome: Option<TickOutcome>,
+        trigger_events: usize,
+    ) {
+        if let (Some(log), Some(outcome), MovementMode::Walk(player)) = (log, outcome, mode) {
+            log.push(TickLogEntry {
+                outcome,
+                state: player.state,
+                trigger_events,
+            });
+        }
+    }
+
     fn advance<W: PmoveWorld, M: BrushModels>(
         &mut self,
         world: &W,
@@ -276,7 +338,7 @@ impl ModeSimulation {
                 (Some(entities), Some(models)) if self.mode.is_walking() => {
                     let solid = MoverWorld::new(world, models, entities.mover_poses());
                     let mut touch = entities.player_touch(models, time_ms);
-                    self.mode.step(&solid, command, Some(&mut touch))?;
+                    let outcome = self.mode.step(&solid, command, Some(&mut touch))?;
                     if let MovementMode::Walk(player) = &mut self.mode {
                         entities.player_touched(&player.touched, time_ms);
                         entities.step_movers(
@@ -290,6 +352,7 @@ impl ModeSimulation {
                         );
                     }
                     let events = entities.drain_events();
+                    Self::log_tick(&mut self.tick_log, &self.mode, outcome, events.len());
                     if let MovementMode::Walk(player) = &mut self.mode
                         && events
                             .iter()
@@ -301,14 +364,18 @@ impl ModeSimulation {
                     self.trigger_events.extend(events);
                 }
                 _ => {
-                    self.mode.step(world, command, None)?;
+                    let outcome = self.mode.step(world, command, None)?;
+                    let mut fired = 0;
                     if let Some(entities) = &mut self.entities {
                         entities.think(time_ms);
                         if let Some(models) = models {
                             entities.step_movers(models, world, time_ms, None);
                         }
-                        self.trigger_events.extend(entities.drain_events());
+                        let events = entities.drain_events();
+                        fired = events.len();
+                        self.trigger_events.extend(events);
                     }
+                    Self::log_tick(&mut self.tick_log, &self.mode, outcome, fired);
                 }
             }
         }
