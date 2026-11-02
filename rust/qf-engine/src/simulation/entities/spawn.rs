@@ -20,7 +20,7 @@ use super::parse::{
     atof, atoi, class_is, freed_at_spawn, links_of, movedir, passes_gametype_filter, placement_of,
     seconds_to_ms,
 };
-use super::{BrushModels, DEFAULT_LEVEL_GRAVITY, Destination, Gametype, SpawnWarning};
+use super::{BrushModels, DEFAULT_LEVEL_GRAVITY, Destination, Gametype, SpawnWarning, schedule};
 
 const MIN_TRIGGER_PUSH_REBOUNCE_TIME_S: f32 = 0.1;
 const MIN_TRIGGER_ALWAYS_DELAY_S: f32 = 0.3;
@@ -76,6 +76,7 @@ pub(super) fn spawn_all_into<M: BrushModels + ?Sized>(
     world.init_resource::<Occupants>();
     world.init_resource::<PendingTouches>();
     world.init_resource::<Outbox>();
+    schedule::install(&mut world);
 
     let alive: Vec<bool> = lump
         .iter()

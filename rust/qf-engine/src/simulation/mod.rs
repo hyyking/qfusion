@@ -5,4 +5,5 @@ pub mod entities;
 pub mod player;
 pub mod pmove;
 pub mod recording;
+pub mod sim;
 pub mod walk;

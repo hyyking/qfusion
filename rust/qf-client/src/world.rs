@@ -8,7 +8,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use qf_engine::content::bsp::{Bsp, WorldMesh};
-use qf_engine::content::image::{Rgba8Image, load_image};
+use qf_engine::content::image::{Rgba8Image, load_mip_chain};
 use qf_engine::content::shader::{
     AlphaFunc, AlphaGen, Blend, BlendFactor, MapSource, RgbGen, Shader, ShaderLib, Stage, TcGen,
     TcMod,
@@ -210,6 +210,10 @@ fn stage_uniform(stage: &Stage, time: f32) -> StageUniform {
             let v = w.eval(time).clamp(0.0, 1.0);
             u.color[..3].copy_from_slice(&[v; 3]);
         }
+        RgbGen::ColorWave(c, w) => {
+            let v = w.eval(time).clamp(0.0, 1.0);
+            u.color[..3].copy_from_slice(&[c[0] * v, c[1] * v, c[2] * v]);
+        }
         _ => {}
     }
     match &stage.alpha_gen {
@@ -336,9 +340,9 @@ fn upload_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     label: &str,
-    image: &Rgba8Image,
+    mips: &[Rgba8Image],
 ) -> wgpu::TextureView {
-    let mips = image.mip_chain();
+    let image = &mips[0];
     let data: Vec<u8> = mips.iter().flat_map(|m| m.pixels.iter().copied()).collect();
     device
         .create_texture_with_data(
@@ -369,14 +373,14 @@ impl Builder<'_> {
         if let Some(v) = self.textures.get(&key) {
             return v.clone();
         }
-        let image = match load_image(&self.content.vfs, name) {
-            Ok(image) => image,
+        let mips = match load_mip_chain(&self.content.vfs, name) {
+            Ok(mips) => mips,
             Err(e) => {
                 eprintln!("texture: '{name}' missing or unreadable ({e:?}); using checker");
-                Rgba8Image::checker(64, 8)
+                Rgba8Image::checker(64, 8).mip_chain()
             }
         };
-        let view = upload_texture(self.device, self.queue, name, &image);
+        let view = upload_texture(self.device, self.queue, name, &mips);
         self.textures.insert(key, view.clone());
         view
     }
@@ -666,7 +670,12 @@ impl WorldRenderer {
         };
         let repeat = sampler(wgpu::AddressMode::Repeat);
         let clamp = sampler(wgpu::AddressMode::ClampToEdge);
-        let white = upload_texture(device, queue, "white", &Rgba8Image::solid([255; 4]));
+        let white = upload_texture(
+            device,
+            queue,
+            "white",
+            &Rgba8Image::solid([255; 4]).mip_chain(),
+        );
 
         let stage_stride = u64::from(device.limits().min_uniform_buffer_offset_alignment)
             .max(std::mem::size_of::<StageUniform>() as u64);

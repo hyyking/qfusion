@@ -5,6 +5,7 @@ pub mod host;
 pub mod inventory;
 pub mod items;
 pub mod pickups;
+pub mod roster;
 pub mod vec;
 pub mod weapons;
 

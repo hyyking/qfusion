@@ -68,5 +68,10 @@ pub(super) fn state_hash(world: &World) -> u64 {
     }
     hash.text(&world.resource::<Occupants>().0);
     hash.text(&world.resource::<Outbox>().events);
+    for (slot, entity) in super::players::in_slot_order_ro(world) {
+        hash.text(&slot);
+        component::<super::players::Cmd>(&mut hash, world, entity);
+        component::<super::players::Walker>(&mut hash, world, entity);
+    }
     hash.0
 }
