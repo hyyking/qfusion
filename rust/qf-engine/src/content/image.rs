@@ -93,7 +93,7 @@ impl Rgba8Image {
             0x83F3 => texture2ddecoder::decode_bc3(blocks, width, height, &mut out),
             other => return Err(err(&format!("unsupported internal format 0x{other:X}"))),
         };
-        result.map_err(|e| err(e))?;
+        result.map_err(err)?;
         // The decoder packs pixels as 0xAARRGGBB.
         let pixels = out
             .iter()
@@ -111,7 +111,7 @@ impl Rgba8Image {
         let mut pixels = Vec::with_capacity((size * size * 4) as usize);
         for y in 0..size {
             for x in 0..size {
-                let on = ((x / cell) + (y / cell)) % 2 == 0;
+                let on = ((x / cell) + (y / cell)).is_multiple_of(2);
                 pixels.extend_from_slice(if on {
                     &[255, 0, 255, 255]
                 } else {

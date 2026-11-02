@@ -18,7 +18,7 @@ By default the client runs the engine's Bomb and Defuse gametype with the player
 
 ## Runtime limitations
 
-- The renderer remains a BSP preview with no textures or lightmaps; patches are tessellated.
+- The world is textured, lightmapped and has a skybox, loaded from the game's pk3s (see `docs/WORLD_ASSETS.md`); `--screenshot out.png` renders one offscreen frame. Entity models are not drawn.
 - Audio is a generated test beep, not a game mixer.
 - Window resizing is supported; mouse/gamepad input, fullscreen, and DPI behavior are not implemented.
 - Tests do not require a display, GPU, or audio device.

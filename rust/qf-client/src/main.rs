@@ -582,7 +582,7 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
 
 fn take_screenshot(options: &Options, shot: &Screenshot) -> Result<(), Box<dyn std::error::Error>> {
     let content = load_content(&options.game_dirs, options.map_pk3.as_deref());
-    let (eye, angles) = ModeSimulation::new(options.player.clone()).mode().view();
+    let (eye, angles) = ModeSimulation::new(options.player).mode().view();
     headless::screenshot(
         &shot.path,
         &content,

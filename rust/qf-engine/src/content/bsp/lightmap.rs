@@ -30,12 +30,12 @@ impl LightmapAtlas {
     /// referenced by faces (negative = none), used to detect deluxemaps.
     pub fn build(data: &[u8], block: usize, face_blocks: impl Iterator<Item = i32>) -> Self {
         let block_bytes = block * block * 3;
-        if data.is_empty() || data.len() % block_bytes != 0 {
+        if data.is_empty() || !data.len().is_multiple_of(block_bytes) {
             return Self::default();
         }
         let blocks = data.len() / block_bytes;
         let deluxe = blocks >= 2
-            && blocks % 2 == 0
+            && blocks.is_multiple_of(2)
             && face_blocks.into_iter().all(|b| b <= 0 || b % 2 == 0)
             && (blocks != 2 || data[block_bytes..].iter().any(|&b| b != 0));
         let step = if deluxe { 2 } else { 1 };
