@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use super::inventory::Inventory;
 use crate::simulation::pmove::Vec3;
 
 /// Armor absorbs this fraction of incoming damage and degrades by the same amount
@@ -39,7 +40,8 @@ impl Team {
 }
 
 /// Engine-owned player state. Which rules apply to it (rounds, roles, scoring) is up
-/// to the gametype script; weapons are inventory data only, firing is not simulated.
+/// to the gametype script; the weapon inventory is state only, firing is not simulated
+/// by this struct.
 #[derive(Clone, Debug)]
 pub struct Player {
     pub team: Team,
@@ -50,7 +52,7 @@ pub struct Player {
     pub velocity: Vec3,
     pub yaw: f32,
     pub pitch: f32,
-    pub weapons: Vec<(String, u32)>,
+    pub inventory: Inventory,
     /// Free-form per-player counters and flags owned by the gametype script.
     pub stats: BTreeMap<String, i64>,
 }
@@ -66,7 +68,7 @@ impl Player {
             velocity: [0.0; 3],
             yaw: 0.0,
             pitch: 0.0,
-            weapons: Vec::new(),
+            inventory: Inventory::default(),
             stats: BTreeMap::new(),
         }
     }

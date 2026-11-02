@@ -26,6 +26,7 @@ pub(super) struct MapTick;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 enum Phase {
     Movement,
+    Weapons,
     Touch,
     Movers,
     Finish,
@@ -134,14 +135,27 @@ pub(super) fn install(world: &mut World) {
     world.init_resource::<MoverFrame>();
     world.init_resource::<Borrowed>();
     world.init_resource::<players::Fault>();
+    super::weapons::install(world);
 
     let mut schedule = Schedule::new(MapTick);
     schedule.set_executor(SingleThreadedExecutor::new());
-    schedule.configure_sets((Phase::Movement, Phase::Touch, Phase::Movers, Phase::Finish).chain());
+    schedule.configure_sets(
+        (
+            Phase::Movement,
+            Phase::Weapons,
+            Phase::Touch,
+            Phase::Movers,
+            Phase::Finish,
+        )
+            .chain(),
+    );
     schedule.add_systems((
         players::movement
             .run_if(|run: Res<Run>| run.players)
             .in_set(Phase::Movement),
+        super::weapons::step
+            .run_if(|run: Res<Run>| run.players)
+            .in_set(Phase::Weapons),
         (
             thinks.run_if(|run: Res<Run>| run.thinks || run.touch),
             touch_pass.run_if(|run: Res<Run>| run.touch),

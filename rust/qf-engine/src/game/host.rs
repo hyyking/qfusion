@@ -19,8 +19,10 @@ use crate::simulation::entities::{BrushModels, Gametype, MapEntities, MoverWorld
 use crate::simulation::pmove::{PmTrace, PmoveWorld, Vec3};
 
 use super::combat::{Player, Team};
+use super::firing::WeaponEvent;
 use super::roster::Roster;
 use super::vec::{Bounds, Rng, add, distance, dot, length, scale, sub};
+use super::weapons::WeaponId;
 
 pub const TICK_MS: u64 = 8;
 type ScriptResult<T> = Result<T, Box<EvalAltResult>>;
@@ -436,14 +438,39 @@ fn register_api(engine: &mut Engine) {
         },
     );
     engine.register_fn("clear_weapons", |g: &mut Game, id: i64| {
-        g.player_mut(id, |p| p.weapons.clear())
+        g.player_mut(id, |p| p.inventory.clear())
     });
     engine.register_fn(
         "give_weapon",
-        |g: &mut Game, id: i64, name: &str, ammo: i64| {
+        |g: &mut Game, id: i64, name: &str, ammo: i64| -> ScriptResult<()> {
+            let weapon =
+                WeaponId::from_name(name).ok_or_else(|| format!("no such weapon {name}"))?;
             g.player_mut(id, |p| {
-                p.weapons.push((name.to_owned(), ammo.max(0) as u32))
+                p.inventory.give_weapon(weapon, ammo.max(0) as u32);
             })
+        },
+    );
+    engine.register_fn(
+        "select_weapon",
+        |g: &mut Game, id: i64, name: &str| -> ScriptResult<bool> {
+            let weapon =
+                WeaponId::from_name(name).ok_or_else(|| format!("no such weapon {name}"))?;
+            g.player_mut(id, |p| p.inventory.request_select(weapon))
+        },
+    );
+    engine.register_fn("weapon", |g: &mut Game, id: i64| -> ScriptResult<String> {
+        g.player_mut(id, |p| {
+            p.inventory
+                .selected()
+                .map_or_else(String::new, |w| w.def().short_name.to_owned())
+        })
+    });
+    engine.register_fn(
+        "ammo",
+        |g: &mut Game, id: i64, name: &str| -> ScriptResult<i64> {
+            let weapon =
+                WeaponId::from_name(name).ok_or_else(|| format!("no such weapon {name}"))?;
+            g.player_mut(id, |p| i64::from(p.inventory.ammo(weapon)))
         },
     );
     engine.register_fn("set_movement_locked", |g: &mut Game, locked: bool| {
@@ -739,6 +766,23 @@ impl GameHost {
             ),
         )
         .map(drop)
+    }
+
+    /// Routes the damage of the simulation's weapon events through the script's
+    /// `on_damage` rule; other event kinds are for rendering and audio.
+    pub fn apply_weapon_events(&mut self, events: &[WeaponEvent]) -> Result<(), GameError> {
+        for event in events {
+            if let WeaponEvent::Damage {
+                victim,
+                attacker,
+                amount,
+                ..
+            } = event
+            {
+                self.damage(*victim, Some(*attacker), *amount)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn set_player_motion(

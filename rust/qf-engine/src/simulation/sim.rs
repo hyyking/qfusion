@@ -11,6 +11,7 @@ use super::entities::{BrushModels, MapEntities, MoverPose, TriggerEvent};
 use super::player::{StepError, TICK_DURATION};
 use super::pmove::{PmoveWorld, PredictedEvent, Vec3};
 use super::walk::{WalkCommand, WalkPlayer};
+use crate::game::{PlayerInput, Projectile, WeaponEvent, WeaponId};
 
 /// Everything the simulation reports, in the order it happened within a tick.
 #[derive(Clone, Debug, PartialEq)]
@@ -19,6 +20,14 @@ pub enum SimEvent {
     Pmove { slot: u8, event: PredictedEvent },
     /// A map entity fired.
     Trigger(TriggerEvent),
+    /// A shot, projectile, impact or damage from the weapon system.
+    Weapon(WeaponEvent),
+}
+
+impl From<WeaponEvent> for SimEvent {
+    fn from(event: WeaponEvent) -> Self {
+        Self::Weapon(event)
+    }
 }
 
 impl From<TriggerEvent> for SimEvent {
@@ -42,6 +51,9 @@ pub struct PlayerView {
     pub origin: Vec3,
     pub velocity: Vec3,
     pub ground_entity: Option<i32>,
+    /// Selected weapon and its ammo, for the HUD.
+    pub weapon: Option<WeaponId>,
+    pub ammo: u32,
 }
 
 /// Read-only snapshot of what a renderer needs.
@@ -50,6 +62,7 @@ pub struct SimView {
     pub tick: u64,
     pub players: Vec<PlayerView>,
     pub movers: Vec<MoverPose>,
+    pub projectiles: Vec<Projectile>,
 }
 
 /// Fixed-tick simulation over a map and its players.
@@ -96,9 +109,34 @@ impl Sim {
                 .into_iter()
                 .map(SimEvent::from),
         );
+        self.events.extend(
+            self.map
+                .take_weapon_events()
+                .into_iter()
+                .map(SimEvent::from),
+        );
         self.events
             .extend(self.map.drain_events().into_iter().map(SimEvent::from));
         result
+    }
+
+    /// The weapon buttons the player of `slot` applies on every following tick (the
+    /// attack button stays held until replaced; select and cycle apply once).
+    pub fn push_weapon_input(&mut self, slot: u8, input: PlayerInput) {
+        self.map.push_weapon_input(slot, input);
+    }
+
+    pub fn inventory(&mut self, slot: u8) -> Option<&crate::game::Inventory> {
+        self.map.inventory(slot)
+    }
+
+    pub fn inventory_mut(&mut self, slot: u8) -> Option<&mut crate::game::Inventory> {
+        self.map.inventory_mut(slot)
+    }
+
+    /// Dead players neither fire nor can be hit.
+    pub fn set_alive(&mut self, slot: u8, alive: bool) {
+        self.map.set_alive(slot, alive);
     }
 
     /// Takes the events produced since the last call.
@@ -113,13 +151,25 @@ impl Sim {
             .into_iter()
             .filter_map(|slot| {
                 let player = self.map.player(slot)?;
+                let (eye, view_angles, origin, velocity, ground_entity) = (
+                    player.eye_position(),
+                    player.view_angles,
+                    player.state.origin,
+                    player.state.velocity,
+                    player.ground_entity,
+                );
+                let inventory = self.map.inventory(slot);
                 Some(PlayerView {
                     slot,
-                    eye: player.eye_position(),
-                    view_angles: player.view_angles,
-                    origin: player.state.origin,
-                    velocity: player.state.velocity,
-                    ground_entity: player.ground_entity,
+                    eye,
+                    view_angles,
+                    origin,
+                    velocity,
+                    ground_entity,
+                    weapon: inventory.and_then(|i| i.selected()),
+                    ammo: inventory
+                        .and_then(|i| i.selected().map(|w| i.ammo(w)))
+                        .unwrap_or(0),
                 })
             })
             .collect();
@@ -127,6 +177,7 @@ impl Sim {
             tick: self.map.tick(),
             players,
             movers: self.map.mover_poses(),
+            projectiles: self.map.projectiles(),
         }
     }
 

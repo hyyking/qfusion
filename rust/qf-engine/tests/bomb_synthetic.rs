@@ -166,10 +166,14 @@ fn loadout_commands_validate_choices() {
     assert!(!h.host.command(0, "primary", "lg pg").unwrap());
     assert!(h.host.command(0, "secondary", "rg").unwrap());
     assert!(!h.host.command(0, "secondary", "rl").unwrap());
-    let weapons = h.host.player(0).weapons;
-    let names: Vec<&str> = weapons.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, ["gunblade", "lg", "eb", "rg"]);
-    assert_eq!(weapons[1].1, 180);
+    let weapons: Vec<_> = h.host.player(0).inventory.owned().collect();
+    let weapons: Vec<(&str, u32)> = weapons
+        .iter()
+        .map(|(weapon, ammo)| (weapon.def().name, *ammo))
+        .collect();
+    let names: Vec<&str> = weapons.iter().map(|(n, _)| *n).collect();
+    assert_eq!(names, ["gunblade", "riotgun", "lasergun", "electrobolt"]);
+    assert_eq!(weapons[2].1, 180);
 }
 
 #[test]
