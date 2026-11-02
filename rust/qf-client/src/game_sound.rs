@@ -9,8 +9,8 @@ use qf_engine::content::vfs::Vfs;
 use qf_engine::simulation::entities::TriggerEvent;
 use qf_engine::simulation::walk::ModeSimulation;
 use qf_engine::sound::{
-    SoundChannel, SoundEvent, SoundName, SoundPosition, SpeakerSet, sound_for_pmove_event,
-    sounds_for_trigger_event,
+    SOUND_TELEPORT_IN, SOUND_TELEPORT_OUT, SoundChannel, SoundEvent, SoundName, SoundPosition,
+    SpeakerSet, sound_for_pmove_event, sounds_for_trigger_event,
 };
 
 const TEST_SOUND: &str = "sounds/menu/ok";
@@ -60,6 +60,8 @@ impl GameSound {
     pub fn new(vfs: Vfs, bsp: &Bsp) -> Result<Self, qf_audio::AudioError> {
         let (device, handle) = AudioDevice::start_default()?;
         let mut system = AudioSystem::new(handle, vfs);
+        // The stock packs ship no tele_out; reuse tele_in (reported once).
+        system.add_fallback(SOUND_TELEPORT_OUT, SOUND_TELEPORT_IN);
         system.preload_builtin();
         system.preload([TEST_SOUND]);
         let speakers = SpeakerSet::from_entities(&bsp.parsed_entities);

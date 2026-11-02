@@ -43,7 +43,7 @@ qf-engine (no audio types)            qf-audio                               qf-
 `game_sound.rs` mounts `--game-dir` (default: Warsow 2.1 install and `%APPDATA%` `basewsw`) plus the map pk3,
 preloads built-in and map sounds, starts the speakers, and each frame sets the listener (eye, yaw) and plays
 drained pmove events. `B` plays `sounds/menu/ok`. Missing sounds print once to stderr
-(e.g. `sounds/world/tele_out` does not exist in the stock packs).
+(e.g. `sounds/world/tele_out` does not exist in the stock packs; the client registers an opt-in `AudioSystem::add_fallback` of `tele_out` -> `tele_in`, reported once, while the engine default still only reports).
 
 ## Tests
 Unit tests cover decode, attenuation/panning, mixer math and the system. `rust/qf-audio/tests/offline_render.rs`

@@ -1,14 +1,15 @@
 //! Game-facing audio front end: turns engine [`SoundEvent`]s into mixer commands.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use qf_engine::sound::{
     PlayerSound, SOUND_JUMPPAD, SOUND_LAUNCHPAD, SOUND_TELEPORT_IN, SOUND_TELEPORT_OUT,
     SOUND_WALLJUMP_FAILED, SoundChannel, SoundEvent, SoundName, SoundPosition,
 };
 
-use crate::cache::{SoundCache, SoundSource};
-use crate::mixer::{Command, MixerHandle, Placement, PlayParams, Priority, VoiceId};
+use crate::cache::{SoundCache, SoundError, SoundSource};
+use crate::mixer::{Buffer, Command, MixerHandle, Placement, PlayParams, Priority, VoiceId};
 use crate::spatial::Listener;
 
 /// Default of the legacy `s_volume` cvar.
@@ -76,6 +77,7 @@ pub struct AudioSystem<S> {
     loops: HashMap<u32, VoiceId>,
     reported: HashSet<String>,
     reports: Vec<String>,
+    fallbacks: HashMap<String, String>,
     rng: u32,
 }
 
@@ -89,6 +91,7 @@ impl<S: SoundSource> AudioSystem<S> {
             loops: HashMap::new(),
             reported: HashSet::new(),
             reports: Vec::new(),
+            fallbacks: HashMap::new(),
             rng: 0x2545_f491,
         }
     }
@@ -117,6 +120,25 @@ impl<S: SoundSource> AudioSystem<S> {
         self.handle.dropped_commands()
     }
 
+    /// Opt-in fallback: when `name` is missing from the content, `fallback` is played instead
+    /// (the substitution is still reported once). Decode errors are never substituted.
+    pub fn add_fallback(&mut self, name: &str, fallback: &str) {
+        self.fallbacks
+            .insert(name.to_string(), fallback.to_string());
+    }
+
+    fn load(&mut self, name: &str) -> Result<Arc<Buffer>, SoundError> {
+        match self.cache.get(name) {
+            Err(SoundError::NotFound { .. }) if self.fallbacks.contains_key(name) => {
+                let fallback = self.fallbacks[name].clone();
+                let buffer = self.cache.get(&fallback)?;
+                self.report(name, format!("'{name}' is missing; using '{fallback}'"));
+                Ok(buffer)
+            }
+            other => other,
+        }
+    }
+
     /// One message per distinct failure (missing or undecodable sound); the caller shows
     /// them. Nothing is ever substituted for a sound that failed to load.
     pub fn take_reports(&mut self) -> Vec<String> {
@@ -137,7 +159,7 @@ impl<S: SoundSource> AudioSystem<S> {
     {
         for name in names {
             let name = name.as_ref();
-            if let Err(error) = self.cache.get(name) {
+            if let Err(error) = self.load(name) {
                 self.report(name, error.to_string());
             }
         }
@@ -211,7 +233,7 @@ impl<S: SoundSource> AudioSystem<S> {
         channel: u8,
     ) -> bool {
         let path = self.resolve(sound);
-        let buffer = match self.cache.get(&path) {
+        let buffer = match self.load(&path) {
             Ok(buffer) => buffer,
             Err(error) => {
                 self.report(&path, error.to_string());
@@ -285,6 +307,25 @@ mod tests {
             src.0.insert(name.to_string(), data.clone());
         }
         (AudioSystem::new(handle, src), mixer)
+    }
+
+    #[test]
+    fn missing_sound_uses_opt_in_fallback_and_reports_once() {
+        let (mut sys, mut mixer) = system(&[("sounds/a.wav", tone())]);
+        sys.add_fallback("sounds/b", "sounds/a");
+        for _ in 0..2 {
+            play_world(&mut sys, "sounds/b", [0.0; 3]);
+        }
+        render(&mut mixer, 8);
+        assert_eq!(mixer.active_voices(), 2);
+        let reports = sys.take_reports();
+        assert_eq!(
+            reports
+                .iter()
+                .filter(|r| r.contains("using 'sounds/a'"))
+                .count(),
+            1
+        );
     }
 
     fn tone() -> Vec<u8> {
