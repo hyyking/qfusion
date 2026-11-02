@@ -440,7 +440,7 @@ impl Builder<'_> {
                     depth_compare: Some(if stage.depth_equal {
                         wgpu::CompareFunction::Equal
                     } else {
-                        wgpu::CompareFunction::LessEqual
+                        wgpu::CompareFunction::GreaterEqual
                     }),
                     stencil: Default::default(),
                     bias: Default::default(),
