@@ -103,3 +103,27 @@ fn hot_reload_swaps_rules_keeps_state_and_rejects_bad_scripts() {
     assert_eq!(events[3].int("n"), Some(12));
     assert_eq!(host.reloads(), 1);
 }
+
+#[test]
+fn radius_damage_picks_living_players_in_range_with_falloff() {
+    let mut host = host(
+        "fn init(g) {} fn on_player_joined(g, id) { g.spawn_at(id, [0.0, 0.0, 0.0], 0.0); } fn tick(g) { \
+           for h in g.radius_damage([0.0, 0.0, 0.0], 100.0, 50.0, true) { \
+             g.emit(\"hit\", #{ victim: h.victim, amount: h.amount }); } \
+           for h in g.radius_damage([0.0, 0.0, 0.0], 100.0, 50.0, false) { \
+             g.emit(\"flat\", #{ victim: h.victim }); } }",
+    );
+    for _ in 0..3 {
+        host.add_player(Team::Alpha).unwrap();
+    }
+    host.set_player_motion(0, [0.0, 0.0, -8.0], [0.0; 3], 0.0, 0.0);
+    host.set_player_motion(1, [0.0, 0.0, 42.0], [0.0; 3], 0.0, 0.0);
+    host.set_player_motion(2, [500.0, 0.0, 0.0], [0.0; 3], 0.0, 0.0);
+    host.tick().unwrap();
+    let events = host.take_events();
+    let hits: Vec<_> = events.iter().filter(|e| e.kind == "hit").collect();
+    assert_eq!(hits.len(), 2, "the far player is out of range");
+    assert_eq!(hits[0].int("victim"), Some(0));
+    assert_eq!(hits[1].int("victim"), Some(1));
+    assert_eq!(events.iter().filter(|e| e.kind == "flat").count(), 2);
+}

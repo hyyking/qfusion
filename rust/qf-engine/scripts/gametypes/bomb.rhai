@@ -424,24 +424,11 @@ fn after_death(g, victim, attacker) {
     }
 }
 
-// Radius damage to every living player with a clear line from `origin`. A flat blast
-// kills everything it can see; otherwise damage falls off linearly. The legacy
-// wave-propagation solver is approximated by this line check.
+// Radius damage to every living player with a clear line from `origin`. The engine picks
+// the victims (slot order, deterministic) and the falloff; the rules (`on_damage`) apply.
 fn radius_damage(g, origin, radius, damage, falloff) {
-    for p in 0..g.player_count() {
-        if !g.alive(p) {
-            continue;
-        }
-        let target = vadd(g.origin(p), [0.0, 0.0, 8.0]);
-        let dist = vdist(origin, target);
-        if dist > radius || !g.los(origin, target) {
-            continue;
-        }
-        let amount = damage;
-        if falloff {
-            amount = max(damage * (1.0 - dist / radius), 1.0);
-        }
-        this.on_damage(g, p, -1, amount);
+    for hit in g.radius_damage(origin, radius, damage, falloff) {
+        this.on_damage(g, hit.victim, -1, hit.amount);
     }
 }
 
