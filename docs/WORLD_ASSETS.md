@@ -45,6 +45,10 @@ qf-client <map.pk3> --freeplay --screenshot out.png [--shot-eye x,y,z] [--shot-a
 
 Renders one frame without a window and exits.
 
+## Entities
+
+`world-audit` also prints the classnames that have no simulated behaviour and the item classnames that `Pickups` does not spawn. On the 38 official maps the client currently spawns only triggers, targets and movers (`MapEntities`); `Pickups` (items, weapons, ammo, powerups) exists in `qf-engine::game` but the client does not instantiate it, and there is no md3/skm model loader, so no item, flag or `misc_*` model is drawn. `item_health` (9) and `ammo_shells` (1) are not legacy classnames either. Other unhandled classnames: `info_player_*` (used by the spawn picker, not simulated), `team_ctf_*`, `trigger_capture_area`, `misc_portal_*`, `misc_particles`, `target_speaker` (audio only), `target_location`, `func_explosive`.
+
 ## Follow-ups
 
 - Entity and item models (md3/skm) and their skins.

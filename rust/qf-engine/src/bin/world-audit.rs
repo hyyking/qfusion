@@ -10,6 +10,8 @@ use qf_engine::content::bsp::Bsp;
 use qf_engine::content::image::load_image;
 use qf_engine::content::shader::{MapSource, ShaderLib};
 use qf_engine::content::vfs::Vfs;
+use qf_engine::game::Pickups;
+use qf_engine::simulation::entities::MapEntities;
 use qf_engine::sound::{
     SOUND_JUMPPAD, SOUND_LAUNCHPAD, SOUND_TELEPORT_IN, SOUND_TELEPORT_OUT, SOUND_WALLJUMP_FAILED,
     SpeakerSet,
@@ -65,6 +67,8 @@ fn run() -> Result<(), String> {
     let mut all_unreadable: BTreeSet<String> = BTreeSet::new();
     let mut all_sounds: BTreeSet<String> = BTreeSet::new();
     let mut unique_warnings: BTreeSet<String> = BTreeSet::new();
+    let mut all_entities: BTreeMap<String, usize> = BTreeMap::new();
+    let mut all_unspawned_items: BTreeMap<String, usize> = BTreeMap::new();
     for map in &maps {
         let mut vfs = Vfs::new();
         vfs.mount_pk3_dir(&dir).map_err(|e| e.to_string())?;
@@ -129,6 +133,16 @@ fn run() -> Result<(), String> {
             .filter(|s| !sound_exists(&vfs, s))
             .collect();
 
+        let spawned = MapEntities::spawn(&bsp.parsed_entities, &bsp);
+        let (_, unspawned_items) = Pickups::from_entities(&bsp.parsed_entities);
+        for (class, n) in spawned.unsupported_classnames() {
+            if !unspawned_items.contains_key(class) {
+                *all_entities.entry(class.clone()).or_default() += n;
+            }
+        }
+        for (class, n) in &unspawned_items {
+            *all_unspawned_items.entry(class.clone()).or_default() += n;
+        }
         for w in &shaders.warnings {
             *by_directive.entry(warning_kind(w)).or_default() += 1;
             unique_warnings.insert(w.clone());
@@ -189,6 +203,14 @@ fn run() -> Result<(), String> {
         for m in &all_missing {
             println!("  missing texture: {m}");
         }
+    }
+    println!("entity classnames without simulated behaviour (count over maps):");
+    for (k, n) in &all_entities {
+        println!("  {n:6} {k}");
+    }
+    println!("item classnames not spawned as pickups (count over maps):");
+    for (k, n) in &all_unspawned_items {
+        println!("  {n:6} {k}");
     }
     let mut kinds: Vec<_> = by_directive.into_iter().collect();
     kinds.sort_by_key(|k| std::cmp::Reverse(k.1));
