@@ -93,16 +93,31 @@ impl HudLayout {
         }
     }
 
-    /// Layout of `name`, falling back to its built-in default.
+    /// Layout of `name`, falling back to its built-in default. The crosshair is always centred.
     pub fn get(&self, name: &str) -> ElementLayout {
-        self.elements
+        let layout = self
+            .elements
             .get(name)
             .copied()
-            .unwrap_or_else(|| Self::default_for(name))
+            .unwrap_or_else(|| Self::default_for(name));
+        Self::pinned(name, layout)
     }
 
     pub fn set(&mut self, name: &str, layout: ElementLayout) {
-        self.elements.insert(name.to_owned(), layout);
+        self.elements
+            .insert(name.to_owned(), Self::pinned(name, layout));
+    }
+
+    /// Whether the user can move `name`; the crosshair stays at the screen centre.
+    pub fn movable(name: &str) -> bool {
+        name != CROSSHAIR
+    }
+
+    fn pinned(name: &str, mut layout: ElementLayout) -> ElementLayout {
+        if !Self::movable(name) {
+            layout.anchor = Self::default_for(name).anchor;
+        }
+        layout
     }
 
     pub fn reset(&mut self) {
@@ -112,7 +127,7 @@ impl HudLayout {
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
         let mut layout: Self = toml::from_str(text)?;
         for (name, element) in &mut layout.elements {
-            *element = element.sanitized(&Self::default_for(name));
+            *element = Self::pinned(name, element.sanitized(&Self::default_for(name)));
         }
         layout.crosshair = layout.crosshair.sanitized();
         Ok(layout)

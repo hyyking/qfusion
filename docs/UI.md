@@ -46,7 +46,7 @@ PRs 2 and 4 touch `bomb.rs` / `main.rs` HUD drawing and should rebase on the bom
 - Menus: custom immediate-mode on the existing HUD.
 - Teams: Alpha, Beta, Spectator (spectator = noclip free-fly). No Auto.
 - Loadout: selectable any time; applied next round (the script already re-gives in pre-round).
-- HUD customization: toggles, anchor/margin/scale, colours, and drag-and-drop (drag edits the anchor + margin, snapping to the nearest anchor).
+- HUD customization: toggles, anchor/margin/scale, colours, and drag-and-drop (drag edits the anchor + margin, snapping to the nearest anchor; the crosshair is excluded and stays centred).
 - Storage: `hud.toml` in the user config dir (adds `serde` + `toml`).
 - Keybinds: configurable now, stored in a `binds` section of the config file (`keybinds.toml`), with defaults in code.
 
@@ -56,4 +56,4 @@ The ECS migration (PRs 1-10) is merged, but only on the engine side: the client 
 
 ## Crosshair
 
-The `crosshair` HUD element (`crosshair.rs`) is a centred cross, dot or cross+dot drawn from rectangles, DPI-aware, hidden while a menu is open. Placement, scale, colour and visibility use the normal `[elements.crosshair]` layout entry; the shape is a `[crosshair]` table in `hud.toml` (`style` = `cross`/`dot`/`cross_dot`, `size`, `thickness`, `gap` in logical pixels, clamped). In the HUD editor select XHAIR, then `X` cycles style, `[` `]` size, `,` `.` thickness, `;` `'` gap.
+The `crosshair` HUD element (`crosshair.rs`) is a centred cross, dot or cross+dot drawn from rectangles, DPI-aware, hidden while a menu is open. It is always centred and cannot be moved: `HudLayout::get`/`set`/`parse` pin its anchor to the screen centre (an off-centre anchor in an old `hud.toml` is ignored), and the editor does not drag it. Scale, colour and visibility use the normal `[elements.crosshair]` layout entry; the shape is a `[crosshair]` table in `hud.toml` (`style` = `cross`/`dot`/`cross_dot`, `size`, `thickness`, `gap` in logical pixels, clamped). In the HUD editor select XHAIR, then `X` cycles style, `[` `]` size, `,` `.` thickness, `;` `'` gap.

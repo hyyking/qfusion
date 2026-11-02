@@ -201,8 +201,10 @@ impl HudEditor {
     pub fn pointer_down(&mut self, screen: &Screen, cursor: [f32; 2]) {
         if let Some(i) = self.element_at(screen, cursor) {
             self.selected = i;
-            let b = self.bounds(ELEMENTS[i], screen);
-            self.drag = Some([cursor[0] - b.x, cursor[1] - b.y]);
+            if HudLayout::movable(ELEMENTS[i]) {
+                let b = self.bounds(ELEMENTS[i], screen);
+                self.drag = Some([cursor[0] - b.x, cursor[1] - b.y]);
+            }
         }
     }
 
@@ -350,7 +352,7 @@ impl HudEditor {
             );
         }
         let help = [
-            "HUD LAYOUT  DRAG TO MOVE  TAB SELECT",
+            "HUD LAYOUT  DRAG TO MOVE (NOT XHAIR)  TAB SELECT",
             "E TOGGLE  +/- SCALE  C COLOUR  R RESET  SHIFT R ALL",
             "XHAIR: X STYLE  [ ] SIZE  , . THICKNESS  ; ' GAP",
             "ENTER SAVE  ESC CANCEL",
@@ -429,6 +431,21 @@ mod tests {
             HudLayout::default_for(hud_layout::UPS)
         );
         assert_eq!(editor.original(), &HudLayout::default());
+    }
+
+    #[test]
+    fn crosshair_cannot_be_dragged_but_can_be_selected() {
+        let mut editor = HudEditor::new(&HudLayout::default());
+        let b = editor.bounds(hud_layout::CROSSHAIR, &SCREEN);
+        let grab = [b.x + b.w * 0.5, b.y + b.h * 0.5];
+        editor.pointer_down(&SCREEN, grab);
+        assert_eq!(editor.selected(), hud_layout::CROSSHAIR);
+        assert!(!editor.is_dragging());
+        assert_eq!(
+            editor.pointer_move(&SCREEN, [10.0, 10.0]),
+            EditorOutcome::None
+        );
+        assert_eq!(editor.layout(), &HudLayout::default());
     }
 
     #[test]
