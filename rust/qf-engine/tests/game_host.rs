@@ -197,6 +197,30 @@ fn hud_is_published_once_per_tick() {
 }
 
 #[test]
+fn weapon_events_route_damage_through_the_script() {
+    use qf_engine::game::{WeaponEvent, WeaponId};
+    let mut host = host(1);
+    let id = host.add_player(Team::Alpha).unwrap();
+    host.start_match().unwrap();
+    let events = [
+        WeaponEvent::Impact {
+            weapon: WeaponId::Electrobolt,
+            origin: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+            victim: Some(id),
+        },
+        WeaponEvent::Damage {
+            victim: id,
+            attacker: id,
+            weapon: WeaponId::Electrobolt,
+            amount: 40.0,
+        },
+    ];
+    host.apply_weapon_events(&events).unwrap();
+    assert!(host.player(id).health < 100.0);
+}
+
+#[test]
 fn script_errors_surface_as_results() {
     let error = GameHost::new(SCRIPT, Arc::new(Floor), &[], &[], None, 1)
         .expect_err("init throws without spawns");
