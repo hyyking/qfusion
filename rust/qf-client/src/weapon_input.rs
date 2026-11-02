@@ -54,7 +54,6 @@ impl WeaponInput {
     }
 
     /// The input for the next tick; select and cycle are consumed.
-    #[allow(dead_code)]
     pub fn take(&mut self) -> PlayerInput {
         PlayerInput {
             fire: self.fire,

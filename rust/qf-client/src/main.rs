@@ -12,6 +12,7 @@ mod hud_layout;
 mod item_models;
 mod keybinds;
 mod loadout;
+mod local_sim;
 mod math;
 mod menu;
 mod model_render;
@@ -34,7 +35,7 @@ use qf_engine::simulation::bsp_world::BspWorld;
 use qf_engine::simulation::entities::{MapEntities, TriggerEvent};
 use qf_engine::simulation::player::NoclipPlayer;
 use qf_engine::simulation::recording::{MapIdentity, Recorder};
-use qf_engine::simulation::walk::{ModeSimulation, MovementMode, WalkCommand};
+use qf_engine::simulation::walk::WalkCommand;
 use winit::application::ApplicationHandler;
 use winit::event::{
     DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
@@ -68,7 +69,7 @@ struct App {
     bsp: Arc<Bsp>,
     /// Local Bomb and Defuse match; absent with `--freeplay`.
     bomb: Option<bomb::BombSession>,
-    simulation: ModeSimulation,
+    simulation: local_sim::LocalSim,
     /// Look direction owned by the client. The simulation only sees it on 125 Hz ticks, so
     /// re-reading it from there would drop input on frames that run no tick.
     view_angles: [f32; 3],
@@ -80,9 +81,7 @@ struct App {
     /// Fed once the client runs on Sim (no inventory before that).
     weapon_hud: weapon_hud::WeaponHud,
     crosshair: crosshair::Crosshair,
-    /// Collected from the keyboard and mouse; handed to `Sim::push_weapon_input` once the
-    /// client runs on Sim.
-    #[allow(dead_code)]
+    /// Collected from the keyboard and mouse; handed to the simulation once per frame.
     weapon_input: weapon_input::WeaponInput,
     recorder: Option<Recorder>,
     record_path: Option<PathBuf>,
@@ -120,7 +119,6 @@ impl App {
         map: MapIdentity,
         record_path: Option<PathBuf>,
     ) -> Self {
-        let mut simulation = ModeSimulation::new(player);
         let entities = MapEntities::spawn(&bsp.parsed_entities, &*bsp);
         for warning in entities.warnings() {
             eprintln!(
@@ -133,8 +131,7 @@ impl App {
             entities.trigger_count(),
             entities.unsupported_classnames().len()
         );
-        simulation.set_entities(entities);
-        simulation.toggle_mode();
+        let mut simulation = local_sim::LocalSim::new(&player, entities);
         let layout = match hud_layout::layout_path() {
             Some(path) => {
                 let (layout, error) = hud_layout::HudLayout::load(&path);
@@ -176,7 +173,7 @@ impl App {
             world_mesh: Some(world_mesh),
             bsp,
             bomb,
-            view_angles: simulation.mode().view().1,
+            view_angles: simulation.view().1,
             simulation,
             pressed_keys: HashSet::new(),
             right_mouse_down: false,
@@ -213,19 +210,20 @@ impl App {
     /// Starts recording walking ticks. Recording only copies each tick's command and result,
     /// so it cannot change the simulation.
     fn start_recording(&mut self, path: Option<PathBuf>) {
-        let MovementMode::Walk(player) = self.simulation.mode() else {
+        let Some(walk) = self.simulation.walk() else {
             self.hud_record.show_message("REC NEED WALK");
             eprintln!("recording needs walk mode");
             return;
         };
+        let initial = walk.state;
         // Entities are installed, so live ticks take the trigger-aware path.
         let generator = concat!("qf-client ", env!("CARGO_PKG_VERSION"));
         self.recorder = Some(Recorder::start(
             self.map.clone(),
             generator,
             125,
-            self.simulation.entities().is_some(),
-            &player.state,
+            true,
+            &initial,
         ));
         self.record_path = Some(path.unwrap_or_else(default_recording_path));
         self.simulation.set_tick_logging(true);
@@ -242,7 +240,7 @@ impl App {
             recorder.push(&entry);
         }
         let ticks = recorder.tick_count();
-        if self.simulation.mode().is_walking() {
+        if self.simulation.is_walking() {
             self.hud_record.set_recording(ticks);
         } else {
             self.stop_recording();
@@ -479,12 +477,7 @@ impl ApplicationHandler for App {
             return;
         };
         let mut submodels: Vec<(usize, WorldMesh)> = Vec::new();
-        for pose in self
-            .simulation
-            .entities()
-            .map(|e| e.mover_poses())
-            .unwrap_or_default()
-        {
+        for pose in self.simulation.movers() {
             if submodels.iter().all(|(m, _)| *m != pose.model) {
                 match self.bsp.model_mesh(pose.model) {
                     Ok(mesh) => submodels.push((pose.model, mesh)),
@@ -757,7 +750,7 @@ impl ApplicationHandler for App {
                 view_angles[1] -= dx as f32 * degrees;
                 view_angles[0] =
                     (view_angles[0] - dy as f32 * degrees).clamp(-MAX_PITCH, MAX_PITCH);
-                let up = if self.simulation.mode().is_walking() {
+                let up = if self.simulation.is_walking() {
                     self.key_axis(KeyCode::Space, KeyCode::KeyC)
                 } else {
                     self.key_axis(KeyCode::KeyR, KeyCode::KeyF)
@@ -782,14 +775,19 @@ impl ApplicationHandler for App {
                 };
                 self.view_angles = view_angles;
                 let world = BspWorld::new(&self.bsp);
+                let can_shoot = self.bomb.as_ref().is_none_or(|bomb| bomb.can_shoot());
+                self.simulation.set_alive(can_shoot);
                 if let Some(bomb) = &mut self.bomb {
                     bomb.apply_movement_lock(&mut self.simulation);
                 }
-                let ticks = match self
-                    .simulation
-                    .advance_frame_with_entities(&world, &*self.bsp, elapsed, command)
-                {
-                    Ok(ticks) => ticks,
+                let frame = match self.simulation.advance(
+                    &world,
+                    &*self.bsp,
+                    elapsed,
+                    command,
+                    &mut self.weapon_input,
+                ) {
+                    Ok(frame) => frame,
                     Err(error) => {
                         eprintln!("player simulation failed: {error}");
                         event_loop.exit();
@@ -798,7 +796,8 @@ impl ApplicationHandler for App {
                 };
                 let mut respawned = false;
                 if let Some(bomb) = &mut self.bomb {
-                    match bomb.advance(ticks, &mut self.simulation) {
+                    bomb.apply_weapon_events(&frame.weapons);
+                    match bomb.advance(frame.ticks, &mut self.simulation) {
                         Ok(spawned) => respawned = spawned,
                         Err(error) => {
                             eprintln!("{error}");
@@ -815,35 +814,32 @@ impl ApplicationHandler for App {
                     }
                 }
                 self.collect_recorded_ticks();
-                let trigger_events = self.simulation.drain_trigger_events();
+                let trigger_events = frame.triggers;
                 let teleported = trigger_events
                     .iter()
                     .any(|event| matches!(event, TriggerEvent::Teleport { .. }));
-                self.view_angles = view_after_frame(
-                    self.view_angles,
-                    self.simulation.mode().view().1,
-                    teleported || respawned,
-                );
-                let (eye, _) = self.simulation.mode().view();
+                let (eye, sim_angles) = self.simulation.view();
+                self.view_angles =
+                    view_after_frame(self.view_angles, sim_angles, teleported || respawned);
                 for event in &trigger_events {
                     println!("trigger: {event:?}");
                 }
                 if let Some(audio) = &mut self.audio {
-                    let mover_poses = self
-                        .simulation
-                        .entities()
-                        .map(|e| e.mover_poses())
-                        .unwrap_or_default();
+                    let mover_poses = self.simulation.movers();
                     audio.update(
                         eye,
                         self.view_angles[1],
-                        &mut self.simulation,
+                        frame.movement,
                         &trigger_events,
                         &mover_poses,
                         elapsed.as_secs_f32(),
                     );
                 }
                 let pickup_changes = self.pickups.update(eye, elapsed);
+                self.weapon_hud.snapshot = self
+                    .simulation
+                    .inventory()
+                    .map(weapon_hud::WeaponSnapshot::from_inventory);
                 if let Some(r) = &mut self.renderer {
                     for (entity, visible) in pickup_changes {
                         r.set_entity_visible(entity, visible);
@@ -859,7 +855,7 @@ impl ApplicationHandler for App {
                         scale,
                     };
                     self.hud_ups.update(&hud::HudState {
-                        velocity: self.simulation.mode().velocity(),
+                        velocity: self.simulation.velocity(),
                         frame_seconds: elapsed.as_secs_f32(),
                     });
                     self.hud_canvas.clear();
@@ -886,11 +882,7 @@ impl ApplicationHandler for App {
                     if let Some(editor) = &self.hud_editor {
                         editor.draw(&screen, &mut self.hud_canvas);
                     }
-                    let movers = self
-                        .simulation
-                        .entities()
-                        .map(|e| e.mover_poses())
-                        .unwrap_or_default();
+                    let movers = self.simulation.movers();
                     self.effects.advance(elapsed.as_secs_f32());
                     r.set_lights(self.effects.lights());
                     r.render(eye, self.view_angles, &movers, &self.hud_canvas);
@@ -1121,7 +1113,9 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
 
 fn take_screenshot(options: &Options, shot: &Screenshot) -> Result<(), Box<dyn std::error::Error>> {
     let content = load_content(&options.game_dirs, options.map_pk3.as_deref());
-    let (eye, angles) = ModeSimulation::new(options.player).mode().view();
+    let mut eye = options.player.position;
+    eye[2] += 30.0;
+    let angles = options.player.view_angles;
     headless::screenshot(
         &shot.path,
         &content,
