@@ -15,6 +15,7 @@ use rhai::{
 use crate::content::bsp::entities::Entity;
 use crate::content::bsp::{Bsp, Model};
 use crate::simulation::bsp_world::BspWorld;
+use crate::simulation::entities::{BrushModels, Gametype, MapEntities, MoverWorld, TriggerEvent};
 use crate::simulation::pmove::{PmTrace, PmoveWorld, Vec3};
 
 use super::combat::{Player, Team};
@@ -26,6 +27,27 @@ type ScriptResult<T> = Result<T, Box<EvalAltResult>>;
 
 pub trait GameWorld: PmoveWorld + Send + Sync {}
 impl<T: PmoveWorld + Send + Sync> GameWorld for T {}
+
+/// Brush-model queries shared with the engine's entity world.
+pub trait GameModels: BrushModels + Send + Sync {}
+impl<T: BrushModels + Send + Sync> GameModels for T {}
+
+/// Inline models known only by their bounds (used when no parsed BSP is available).
+struct ModelBounds(Vec<(Vec3, Vec3)>);
+
+impl BrushModels for ModelBounds {
+    fn model_bounds(&self, index: usize) -> Option<(Vec3, Vec3)> {
+        self.0.get(index).copied()
+    }
+
+    fn box_touches_model(&self, index: usize, origin: Vec3, mins: Vec3, maxs: Vec3) -> bool {
+        self.0.get(index).is_some_and(|(lo, hi)| {
+            (0..3).all(|axis| {
+                maxs[axis] > lo[axis] + origin[axis] && mins[axis] < hi[axis] + origin[axis]
+            })
+        })
+    }
+}
 
 /// Owns a parsed BSP so scripts can trace without borrowing it.
 pub struct OwnedBspWorld(pub Arc<Bsp>);
@@ -124,11 +146,49 @@ impl GameEvent {
 struct Core {
     now: u64,
     roster: Roster,
+    map: MapEntities,
+    models: Arc<dyn GameModels>,
     entities: rhai::Array,
     world: Arc<dyn GameWorld>,
     world_bounds: Bounds,
     rng: Rng,
     events: Vec<GameEvent>,
+}
+
+impl Core {
+    /// Static collision plus the map's brush movers at their current pose.
+    fn trace(&self, start: Vec3, mins: Vec3, maxs: Vec3, end: Vec3) -> PmTrace {
+        MoverWorld::new(&*self.world, &*self.models, self.map.mover_poses()).trace(
+            start,
+            mins,
+            maxs,
+            end,
+            crate::simulation::pmove::CONTENTS_SOLID,
+        )
+    }
+
+    /// Runs the map's due thinks and forwards use-chain events to the script queue.
+    fn run_map(&mut self) {
+        self.map.think(self.now as i64);
+        self.forward_map_events();
+    }
+
+    fn forward_map_events(&mut self) {
+        for event in self.map.drain_events() {
+            let (kind, fields) = match event {
+                TriggerEvent::Used { source, target } => (
+                    "use",
+                    [("source", source), ("target", target)]
+                        .map(|(k, v)| (k.to_owned(), Value::Int(v as i64))),
+                ),
+                _ => continue,
+            };
+            self.events.push(GameEvent {
+                kind: kind.into(),
+                fields: fields.into_iter().collect(),
+            });
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -147,6 +207,10 @@ impl Game {
             .ok_or_else(|| format!("no such player {id}"))?;
         Ok(f(player))
     }
+}
+
+fn entity_index(index: i64) -> ScriptResult<usize> {
+    usize::try_from(index).map_err(|_| format!("no such entity {index}").into())
 }
 
 fn number(value: &Dynamic) -> ScriptResult<f32> {
@@ -225,12 +289,11 @@ fn register_api(engine: &mut Engine) {
          mins: rhai::Array,
          maxs: rhai::Array|
          -> ScriptResult<Map> {
-            let trace = g.core().world.trace(
+            let trace = g.core().trace(
                 to_vec3(&start)?,
                 to_vec3(&mins)?,
                 to_vec3(&maxs)?,
                 to_vec3(&end)?,
-                crate::simulation::pmove::CONTENTS_SOLID,
             );
             let mut map = Map::new();
             map.insert(
@@ -249,14 +312,30 @@ fn register_api(engine: &mut Engine) {
     engine.register_fn(
         "los",
         |g: &mut Game, from: rhai::Array, to: rhai::Array| -> ScriptResult<bool> {
-            let trace = g.core().world.trace(
-                to_vec3(&from)?,
-                [0.0; 3],
-                [0.0; 3],
-                to_vec3(&to)?,
-                crate::simulation::pmove::CONTENTS_SOLID,
-            );
+            let trace = g
+                .core()
+                .trace(to_vec3(&from)?, [0.0; 3], [0.0; 3], to_vec3(&to)?);
             Ok(trace.fraction >= 1.0)
+        },
+    );
+    engine.register_fn(
+        "use_entity",
+        |g: &mut Game, index: i64| -> ScriptResult<bool> {
+            let mut core = g.core();
+            let (index, now) = (entity_index(index)?, core.now as i64);
+            let fired = core.map.activate(index, now);
+            core.forward_map_events();
+            Ok(fired)
+        },
+    );
+    engine.register_fn(
+        "fire_targets",
+        |g: &mut Game, index: i64| -> ScriptResult<bool> {
+            let mut core = g.core();
+            let (index, now) = (entity_index(index)?, core.now as i64);
+            let fired = core.map.use_targets_of(index, now);
+            core.forward_map_events();
+            Ok(fired)
         },
     );
     engine.register_fn(
@@ -490,9 +569,10 @@ impl GameHost {
         });
         let entities = bsp.parsed_entities.clone();
         let models = bsp.models.clone();
-        Self::new(
+        Self::with_models(
             script,
-            Arc::new(OwnedBspWorld(bsp)),
+            Arc::new(OwnedBspWorld(bsp.clone())),
+            bsp,
             &entities,
             &models,
             bounds,
@@ -508,6 +588,22 @@ impl GameHost {
         world_bounds: Option<Bounds>,
         seed: u64,
     ) -> Result<Self, GameError> {
+        let brush = Arc::new(ModelBounds(
+            models.iter().map(|m| (m.mins, m.maxs)).collect(),
+        ));
+        Self::with_models(script, world, brush, entities, models, world_bounds, seed)
+    }
+
+    /// Like [`Self::new`] with explicit brush-model queries for the map entity world.
+    pub fn with_models(
+        script: &str,
+        world: Arc<dyn GameWorld>,
+        brush: Arc<dyn GameModels>,
+        entities: &[Entity],
+        models: &[Model],
+        world_bounds: Option<Bounds>,
+        seed: u64,
+    ) -> Result<Self, GameError> {
         let mut engine = sandboxed_engine();
         register_api(&mut engine);
         let ast = engine.compile(script).map_err(script_error)?;
@@ -515,6 +611,8 @@ impl GameHost {
         let game = Game(Arc::new(Mutex::new(Core {
             now: 0,
             roster: Roster::new(),
+            map: MapEntities::spawn_for_gametype(entities, &*brush, &Gametype::bomb()),
+            models: brush,
             entities: entities
                 .iter()
                 .map(|e| Dynamic::from(export_entity(e, models)))
@@ -589,6 +687,7 @@ impl GameHost {
     /// Advances the simulation by one fixed 8 ms tick.
     pub fn tick(&mut self) -> Result<(), GameError> {
         self.game.core().now += TICK_MS;
+        self.game.core().run_map();
         self.call("tick", (self.game.clone(),)).map(drop)
     }
 

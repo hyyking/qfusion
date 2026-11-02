@@ -123,6 +123,64 @@ fn commands_damage_and_errors_go_through_the_script() {
     assert!(player.armor < 100.0);
 }
 
+fn relay(properties: &[(&str, &str)]) -> Entity {
+    Entity {
+        properties: properties
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect(),
+    }
+}
+
+const USE_SCRIPT: &str = r#"
+fn init(g) {}
+fn tick(g) {
+    if g.now() == 8 {
+        g.emit("fired", #{ ok: g.use_entity(0), missing: g.use_entity(99), targets: g.fire_targets(2) });
+    }
+}
+"#;
+
+#[test]
+fn scripts_fire_map_use_chains_and_see_them_as_events() {
+    let entities = [
+        relay(&[
+            ("classname", "target_relay"),
+            ("targetname", "a"),
+            ("target", "b"),
+        ]),
+        relay(&[("classname", "target_relay"), ("targetname", "b")]),
+        relay(&[("classname", "target_relay"), ("target", "b")]),
+    ];
+    let mut host = GameHost::new(USE_SCRIPT, Arc::new(Floor), &entities, &[], None, 1).unwrap();
+    host.tick().unwrap();
+    let events = host.take_events();
+    let fired = events.iter().find(|e| e.kind == "fired").unwrap();
+    assert_eq!(fired.fields.get("ok"), Some(&Value::Bool(true)));
+    assert_eq!(fired.fields.get("missing"), Some(&Value::Bool(false)));
+    let uses: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "use")
+        .map(|e| (e.int("source").unwrap(), e.int("target").unwrap()))
+        .collect();
+    assert_eq!(uses, vec![(0, 1), (2, 1)]);
+}
+
+#[test]
+fn entities_excluded_from_the_bomb_gametype_are_not_spawned() {
+    let entities = [
+        relay(&[("classname", "target_relay"), ("not_gametype", "bomb")]),
+        relay(&[("classname", "target_relay")]),
+    ];
+    let script =
+        "fn init(g) { g.emit(\"r\", #{ a: g.use_entity(0), b: g.use_entity(1) }); } fn tick(g) {}";
+    let mut host = GameHost::new(script, Arc::new(Floor), &entities, &[], None, 1).unwrap();
+    let events = host.take_events();
+    let r = &events[0];
+    assert_eq!(r.fields.get("a"), Some(&Value::Bool(false)));
+    assert_eq!(r.fields.get("b"), Some(&Value::Bool(true)));
+}
+
 #[test]
 fn script_errors_surface_as_results() {
     let error = GameHost::new(SCRIPT, Arc::new(Floor), &[], &[], None, 1)
