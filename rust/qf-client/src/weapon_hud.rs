@@ -55,6 +55,27 @@ impl WeaponHud {
         }
     }
 
+    /// Approximate on-screen size of the ammo block (name + counter), in pixels.
+    pub fn ammo_size(layout_scale: f32, screen_scale: f32) -> [f32; 2] {
+        let pixel = Self::PIXEL * layout_scale * screen_scale;
+        let name = text_size(12, pixel * 0.5);
+        let ammo = text_size(3, pixel * 2.0);
+        [name[0].max(ammo[0]), name[1] + pixel + ammo[1]]
+    }
+
+    /// On-screen size of a bar with slots weapons, in pixels.
+    pub fn bar_size(slots: usize, layout_scale: f32, screen_scale: f32) -> [f32; 2] {
+        let pixel = Self::PIXEL * layout_scale * screen_scale;
+        let cell = Self::cell_size(pixel);
+        let count = slots as f32;
+        [count * cell[0] + (count - 1.0).max(0.0) * pixel, cell[1]]
+    }
+
+    fn cell_size(pixel: f32) -> [f32; 2] {
+        let text = text_size(4, pixel * 0.75);
+        [text[0] + pixel * 2.0, text[1] * 2.0 + pixel * 3.0]
+    }
+
     pub fn set_layout(&mut self, layout: &HudLayout) {
         self.bar = layout.get(hud_layout::WEAPONS);
         self.ammo = layout.get(hud_layout::AMMO);
