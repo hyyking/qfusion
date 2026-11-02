@@ -242,6 +242,11 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, width, height);
     }
 
+    /// Hides or shows the model of a map entity (a taken or respawned pickup).
+    pub fn set_entity_visible(&mut self, entity: usize, visible: bool) {
+        self.models.set_entity_visible(entity, visible);
+    }
+
     pub fn size(&self) -> [f32; 2] {
         [self.config.width as f32, self.config.height as f32]
     }

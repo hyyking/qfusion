@@ -14,6 +14,7 @@ mod loadout;
 mod math;
 mod menu;
 mod model_render;
+mod pickup_view;
 mod render;
 mod weapon_hud;
 mod world;
@@ -53,6 +54,7 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<render::Renderer>,
     audio: Option<game_sound::GameSound>,
+    pickups: pickup_view::PickupView,
     game_dirs: Vec<PathBuf>,
     map_pk3: Option<PathBuf>,
     world_mesh: Option<WorldMesh>,
@@ -156,6 +158,7 @@ impl App {
             window: None,
             renderer: None,
             audio: None,
+            pickups: pickup_view::PickupView::new(&bsp.parsed_entities),
             game_dirs,
             map_pk3,
             world_mesh: Some(world_mesh),
@@ -795,7 +798,11 @@ impl ApplicationHandler for App {
                         &trigger_events,
                     );
                 }
+                let pickup_changes = self.pickups.update(eye, elapsed);
                 if let Some(r) = &mut self.renderer {
+                    for (entity, visible) in pickup_changes {
+                        r.set_entity_visible(entity, visible);
+                    }
                     let [width, height] = r.size();
                     let scale = self
                         .window
