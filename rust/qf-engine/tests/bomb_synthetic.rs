@@ -229,7 +229,7 @@ mod replay {
             }
             r.input(Op::Tick).unwrap();
         }
-        r.finish()
+        r.finish().unwrap()
     }
 
     fn replay(log: &GameLog) -> Result<(), ReplayError> {

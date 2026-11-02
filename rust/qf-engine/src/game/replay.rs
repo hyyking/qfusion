@@ -377,7 +377,9 @@ impl Recorder {
         Ok(())
     }
 
-    pub fn finish(self) -> GameLog {
-        self.log
+    /// The log, or `None` if the script was hot reloaded while recording: the replay
+    /// could not reproduce the run.
+    pub fn finish(self) -> Option<GameLog> {
+        (self.host.reloads() == 0).then_some(self.log)
     }
 }
