@@ -17,6 +17,7 @@ use crate::content::bsp::{Bsp, Model};
 use crate::simulation::bsp_world::BspWorld;
 use crate::simulation::entities::{BrushModels, Gametype, MapEntities, MoverWorld, TriggerEvent};
 use crate::simulation::pmove::{PmTrace, PmoveWorld, Vec3};
+use crate::simulation::sim::Sim;
 
 use super::combat::{Player, Team};
 use super::firing::WeaponEvent;
@@ -148,7 +149,7 @@ impl GameEvent {
 struct Core {
     now: u64,
     roster: Roster,
-    map: MapEntities,
+    sim: Sim,
     models: Arc<dyn GameModels>,
     entities: rhai::Array,
     world: Arc<dyn GameWorld>,
@@ -160,7 +161,7 @@ struct Core {
 impl Core {
     /// Static collision plus the map's brush movers at their current pose.
     fn trace(&self, start: Vec3, mins: Vec3, maxs: Vec3, end: Vec3) -> PmTrace {
-        MoverWorld::new(&*self.world, &*self.models, self.map.mover_poses()).trace(
+        MoverWorld::new(&*self.world, &*self.models, self.sim.map().mover_poses()).trace(
             start,
             mins,
             maxs,
@@ -171,12 +172,12 @@ impl Core {
 
     /// Runs the map's due thinks and forwards use-chain events to the script queue.
     fn run_map(&mut self) {
-        self.map.think(self.now as i64);
+        self.sim.map_mut().think(self.now as i64);
         self.forward_map_events();
     }
 
     fn forward_map_events(&mut self) {
-        for event in self.map.drain_events() {
+        for event in self.sim.map_mut().drain_events() {
             let (kind, fields) = match event {
                 TriggerEvent::Used { source, target } => (
                     "use",
@@ -358,7 +359,7 @@ fn register_api(engine: &mut Engine) {
         |g: &mut Game, index: i64| -> ScriptResult<bool> {
             let mut core = g.core();
             let (index, now) = (entity_index(index)?, core.now as i64);
-            let fired = core.map.activate(index, now);
+            let fired = core.sim.map_mut().activate(index, now);
             core.forward_map_events();
             Ok(fired)
         },
@@ -368,7 +369,7 @@ fn register_api(engine: &mut Engine) {
         |g: &mut Game, index: i64| -> ScriptResult<bool> {
             let mut core = g.core();
             let (index, now) = (entity_index(index)?, core.now as i64);
-            let fired = core.map.use_targets_of(index, now);
+            let fired = core.sim.map_mut().use_targets_of(index, now);
             core.forward_map_events();
             Ok(fired)
         },
@@ -672,7 +673,10 @@ impl GameHost {
         let game = Game(Arc::new(Mutex::new(Core {
             now: 0,
             roster: Roster::new(),
-            map: MapEntities::spawn_for_gametype(entities, &*brush, &Gametype::bomb()),
+            sim: Sim::new(
+                MapEntities::spawn_for_gametype(entities, &*brush, &Gametype::bomb()),
+                seed,
+            ),
             models: brush,
             entities: entities
                 .iter()
@@ -907,7 +911,7 @@ impl GameHost {
         feed(&core.now.to_le_bytes());
         feed(&core.rng.state().to_le_bytes());
         feed(&[u8::from(core.roster.movement_locked())]);
-        feed(&core.map.state_hash().to_le_bytes());
+        feed(&core.sim.state_hash().to_le_bytes());
         for slot in 0..core.roster.len() {
             if let Some(player) = core.roster.get(slot) {
                 feed(format!("{player:?}").as_bytes());
