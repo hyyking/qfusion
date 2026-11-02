@@ -49,7 +49,7 @@ const L_FACES: usize = 13;
 pub const FACETYPE_PLANAR: i32 = 1;
 pub const FACETYPE_PATCH: i32 = 2;
 /// Surface flag: don't collide against curves with this set.
-pub const SURF_NONSOLID: i32 = 0x4000;
+pub const SURF_NONSOLID: i32 = super::map::flags::SURF_NONSOLID as i32;
 pub const FACETYPE_TRISURF: i32 = 3;
 pub const FACETYPE_FLARE: i32 = 4;
 pub const FACETYPE_FOLIAGE: i32 = 5;

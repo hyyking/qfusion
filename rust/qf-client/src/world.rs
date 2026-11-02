@@ -9,6 +9,7 @@ use wgpu::util::DeviceExt;
 
 use qf_engine::content::bsp::{Bsp, WorldMesh};
 use qf_engine::content::image::{Rgba8Image, load_mip_chain};
+use qf_engine::content::map::flags;
 use qf_engine::content::shader::{
     AlphaFunc, AlphaGen, Blend, BlendFactor, MapSource, RgbGen, Shader, ShaderLib, Stage, TcGen,
     TcMod,
@@ -18,9 +19,9 @@ use qf_engine::simulation::entities::MoverPose;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-const SURF_SKY: i32 = 0x4;
-const SURF_NODRAW: i32 = 0x80;
-const SURF_SKIP: i32 = 0x200;
+const SURF_SKY: i32 = flags::SURF_SKY as i32;
+const SURF_NODRAW: i32 = flags::SURF_NODRAW as i32;
+const SURF_SKIP: i32 = flags::SURF_SKIP as i32;
 const MAX_STAGES: usize = 8;
 /// Multiplier applied to lightmap and vertex-lit colours (legacy overbright).
 const LIGHT_SCALE: f32 = 1.0;
