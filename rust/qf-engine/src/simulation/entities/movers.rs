@@ -141,6 +141,19 @@ pub(super) struct Mover {
     touchable: bool,
 }
 
+impl Mover {
+    /// Debug text without the ECS entity id, which depends on spawn layout.
+    pub(super) fn canonical(&self) -> String {
+        format!(
+            "{:?}",
+            Self {
+                entity: Entity::PLACEHOLDER,
+                ..self.clone()
+            }
+        )
+    }
+}
+
 /// All movers in lump order, plus the team captain whose frame is running.
 #[derive(Resource, Default)]
 pub(super) struct Movers {
@@ -1056,7 +1069,7 @@ pub(super) fn touched_by_player(world: &mut World, lump: usize, time_ms: i64) {
         return;
     };
     if mv(world, i).touchable {
-        world.resource_mut::<Level>().time_ms = time_ms;
+        world.resource_mut::<Level>().set_time(time_ms);
         button_fire(world, i);
     }
 }
@@ -1080,7 +1093,7 @@ pub(super) fn shoot(world: &mut World, lump: usize, damage: i32, time_ms: i64) -
         return true;
     }
     m.health = m.max_health;
-    world.resource_mut::<Level>().time_ms = time_ms;
+    world.resource_mut::<Level>().set_time(time_ms);
     use_mover(world, i);
     true
 }
@@ -1095,7 +1108,7 @@ pub(super) fn step(
     time_ms: i64,
     player: Option<PushedPlayer<'_>>,
 ) {
-    world.resource_mut::<Level>().time_ms = time_ms;
+    world.resource_mut::<Level>().set_time(time_ms);
     let mut ctx = Ctx {
         models,
         world: static_world,

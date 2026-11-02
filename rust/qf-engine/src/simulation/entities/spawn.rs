@@ -14,7 +14,7 @@ use crate::simulation::pmove::Vec3;
 
 use super::components::{
     Classname, Enabled, Level, LumpIndex, Occupants, Outbox, PendingTouches, Placement, Player,
-    Registry, Think, ThinkKind, Timing, TouchKind, UseKind, Volume,
+    Registry, SimRng, Think, ThinkKind, Timing, TouchKind, UseKind, Volume,
 };
 use super::parse::{
     atof, atoi, class_is, freed_at_spawn, links_of, movedir, passes_gametype_filter, placement_of,
@@ -51,17 +51,27 @@ pub(super) fn spawn_all<M: BrushModels + ?Sized>(
     models: &M,
     gametype: &Gametype,
 ) -> Spawned {
+    spawn_all_into(World::new(), lump, models, gametype)
+}
+
+pub(super) fn spawn_all_into<M: BrushModels + ?Sized>(
+    mut world: World,
+    lump: &[LumpEntity],
+    models: &M,
+    gametype: &Gametype,
+) -> Spawned {
     let gravity = lump
         .first()
         .filter(|entity| class_is(entity, "worldspawn"))
         .and_then(|entity| entity.get("gravity"))
         .map_or(DEFAULT_LEVEL_GRAVITY, atof);
 
-    let mut world = World::new();
     world.insert_resource(Level {
         time_ms: 0,
+        tick: 0,
         gravity,
     });
+    world.init_resource::<SimRng>();
     world.init_resource::<Player>();
     world.init_resource::<Occupants>();
     world.init_resource::<PendingTouches>();

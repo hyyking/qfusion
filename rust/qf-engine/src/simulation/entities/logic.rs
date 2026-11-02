@@ -375,7 +375,7 @@ pub(super) fn touch(
     context: &TouchContext,
     predicted: &mut Vec<PredictedEvent>,
 ) {
-    world.resource_mut::<Level>().time_ms = time_ms;
+    world.resource_mut::<Level>().set_time(time_ms);
     world.resource_mut::<Player>().0 = Some(PlayerPresence {
         state: *state,
         context: *context,

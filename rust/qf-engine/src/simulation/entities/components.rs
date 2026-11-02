@@ -6,6 +6,8 @@
 use bevy_ecs::prelude::*;
 
 use super::{Destination, Occupant, TriggerEvent};
+use crate::game::vec::Rng;
+use crate::simulation::player::TICK_DURATION;
 use crate::simulation::pmove::{PmoveState, PredictedEvent, TouchContext, Vec3};
 
 /// Position of the entity in the map's entity lump (the legacy edict number
@@ -134,11 +136,32 @@ pub(super) struct Registry {
     pub by_lump: Vec<Option<Entity>>,
 }
 
-/// `level.time` and `level.gravity`.
+/// `level.time` and `level.gravity`. The only clock of the entity world: `tick` is
+/// always derived from `time_ms` by [`Level::set_time`].
 #[derive(Resource, Default)]
 pub(super) struct Level {
     pub time_ms: i64,
+    pub tick: u64,
     pub gravity: f32,
+}
+
+impl Level {
+    pub fn set_time(&mut self, time_ms: i64) {
+        self.time_ms = time_ms;
+        self.tick = u64::try_from(time_ms / TICK_DURATION.as_millis() as i64).unwrap_or(0);
+    }
+}
+
+/// Match seed; consumers draw per-`(tick, purpose)` substreams from it.
+#[derive(Resource, Default)]
+pub(super) struct SimRng {
+    pub seed: u64,
+}
+
+impl SimRng {
+    pub fn stream(&self, tick: u64, purpose: u32) -> Rng {
+        Rng::substream(self.seed, tick, purpose)
+    }
 }
 
 /// The local player while a tick is processed; `None` between ticks.
