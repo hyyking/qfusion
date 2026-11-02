@@ -815,6 +815,31 @@ impl GameHost {
         self.game.core().now
     }
 
+    /// FNV-1a hash of all simulated game state: clock, RNG, every player, the movement
+    /// lock, the map entity world and the script's private state, in a canonical order
+    /// (slot order; `Map` keys sort). Equal hashes mean equal games; replay checkpoints
+    /// compare it. `GameEvent`s are outputs, not state, and are not hashed.
+    pub fn state_hash(&self) -> u64 {
+        let core = self.game.core();
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        let mut feed = |bytes: &[u8]| {
+            for byte in bytes {
+                hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        feed(&core.now.to_le_bytes());
+        feed(&core.rng.state().to_le_bytes());
+        feed(&[u8::from(core.roster.movement_locked())]);
+        feed(&core.map.state_hash().to_le_bytes());
+        for slot in 0..core.roster.len() {
+            if let Some(player) = core.roster.get(slot) {
+                feed(format!("{player:?}").as_bytes());
+            }
+        }
+        feed(format!("{:?}", self.state).as_bytes());
+        hash
+    }
+
     pub fn player(&self, id: usize) -> Player {
         self.game
             .core()

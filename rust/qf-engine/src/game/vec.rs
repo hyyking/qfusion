@@ -63,6 +63,11 @@ impl Rng {
         Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
     }
 
+    /// Raw generator state, for state hashing.
+    pub fn state(&self) -> u64 {
+        self.0
+    }
+
     /// Independent generator for `(tick, purpose)` derived from the match seed, so adding
     /// or reordering consumers never shifts the numbers another consumer sees.
     pub fn substream(seed: u64, tick: u64, purpose: u32) -> Self {
