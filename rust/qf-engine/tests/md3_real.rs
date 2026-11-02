@@ -21,7 +21,10 @@ fn parses_all_item_weapon_and_object_models() {
         for name in vfs.list(prefix).into_iter().filter(|f| f.ends_with(".md3")) {
             let m = md3::parse(&vfs.read(&name).unwrap()).unwrap_or_else(|e| panic!("{name}: {e}"));
             // `*_hand` models are tag-only.
-            assert!(!m.surfaces.is_empty() || name.ends_with("_hand.md3"), "{name}");
+            assert!(
+                !m.surfaces.is_empty() || name.ends_with("_hand.md3"),
+                "{name}"
+            );
             n += 1;
         }
     }
