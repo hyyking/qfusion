@@ -347,10 +347,194 @@ impl SpeakerSet {
     }
 }
 
+pub const SOUND_DOOR_START: &str = "sounds/movers/door_start";
+pub const SOUND_DOOR_STOP: &str = "sounds/movers/door_stop";
+pub const SOUND_PLAT_MOVE: &str = "sounds/movers/elevator_move";
+
+/// Loop keys of movers are tagged so they never collide with speaker keys.
+const MOVER_LOOP_TAG: u32 = 0x8000_0000;
+/// A mover that has not changed pose for this long counts as stopped.
+const MOVER_IDLE_SECONDS: f32 = 0.1;
+
+/// One mover's sounds; `None` means silent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoverSound {
+    pub entity: usize,
+    pub model: usize,
+    /// Center of the brush model at rest, relative to the pose origin.
+    pub center: [f32; 3],
+    pub start: Option<String>,
+    pub stop: Option<String>,
+    pub moving: Option<String>,
+}
+
+/// Door, plat and rotating-door sounds. Derived on the client from pose changes, so the
+/// simulation stays free of audio concerns.
+#[derive(Debug, Default)]
+pub struct MoverSounds {
+    movers: Vec<MoverSound>,
+    state: Vec<MoverState>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct MoverState {
+    last: Option<([f32; 3], [f32; 3])>,
+    moving: bool,
+    idle: f32,
+}
+
+fn mover_noise(entity: &Entity, key: &str, default: Option<&str>) -> Option<String> {
+    match entity.get(key) {
+        Some("silent") => None,
+        Some(v) if v != "default" && !v.is_empty() => Some(v.to_string()),
+        _ => default.map(str::to_string),
+    }
+}
+
+impl MoverSounds {
+    /// `bounds` are the `(mins, maxs)` of each BSP submodel.
+    pub fn from_entities(entities: &[Entity], bounds: &[([f32; 3], [f32; 3])]) -> Self {
+        let mut movers = Vec::new();
+        for (index, entity) in entities.iter().enumerate() {
+            let defaults = match entity
+                .get("classname")
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "func_door" | "func_door_rotating" => {
+                    (Some(SOUND_DOOR_START), Some(SOUND_DOOR_STOP), None)
+                }
+                "func_plat" => (None, None, Some(SOUND_PLAT_MOVE)),
+                _ => continue,
+            };
+            let Some(model) = entity
+                .get("model")
+                .and_then(|m| m.strip_prefix('*'))
+                .and_then(|m| m.parse::<usize>().ok())
+                .filter(|&m| m != 0)
+            else {
+                continue;
+            };
+            let center = bounds.get(model).map_or([0.0; 3], |(mins, maxs)| {
+                std::array::from_fn(|i| (mins[i] + maxs[i]) * 0.5)
+            });
+            let sound = MoverSound {
+                entity: index,
+                model,
+                center,
+                start: mover_noise(entity, "noise_start", defaults.0),
+                stop: mover_noise(entity, "noise_stop", defaults.1),
+                moving: mover_noise(entity, "noise", defaults.2),
+            };
+            if sound.start.is_some() || sound.stop.is_some() || sound.moving.is_some() {
+                movers.push(sound);
+            }
+        }
+        let state = vec![MoverState::default(); movers.len()];
+        Self { movers, state }
+    }
+
+    pub fn sounds(&self) -> &[MoverSound] {
+        &self.movers
+    }
+
+    /// Diffs this frame's poses against the previous ones. `dt` is the frame time in seconds.
+    pub fn update(
+        &mut self,
+        poses: &[crate::simulation::entities::MoverPose],
+        dt: f32,
+    ) -> Vec<SoundEvent> {
+        let mut events = Vec::new();
+        for (mover, state) in self.movers.iter().zip(self.state.iter_mut()) {
+            let Some(pose) = poses.iter().find(|p| p.entity == mover.entity) else {
+                continue;
+            };
+            let now = (pose.origin, pose.angles);
+            let changed = state.last.is_some_and(|last| last != now);
+            state.last = Some(now);
+            let position = SoundPosition::World {
+                origin: std::array::from_fn(|i| pose.origin[i] + mover.center[i]),
+                attenuation: ATTN_STATIC,
+            };
+            let play = |name: &Option<String>| {
+                name.as_ref().map(|n| SoundEvent::Play {
+                    sound: SoundName::Path(n.clone()),
+                    position,
+                    volume: 1.0,
+                    channel: SoundChannel::Auto,
+                })
+            };
+            let key = mover.entity as u32 | MOVER_LOOP_TAG;
+            if changed {
+                state.idle = 0.0;
+                if !state.moving {
+                    state.moving = true;
+                    events.extend(play(&mover.start));
+                    if let Some(name) = &mover.moving {
+                        events.push(SoundEvent::LoopStart {
+                            key,
+                            sound: SoundName::Path(name.clone()),
+                            position,
+                            volume: 1.0,
+                        });
+                    }
+                }
+            } else if state.moving {
+                state.idle += dt;
+                if state.idle >= MOVER_IDLE_SECONDS {
+                    state.moving = false;
+                    if mover.moving.is_some() {
+                        events.push(SoundEvent::LoopStop { key });
+                    }
+                    events.extend(play(&mover.stop));
+                }
+            }
+        }
+        events
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::content::bsp::entities::parse_entities;
+    use crate::simulation::entities::MoverPose;
+
+    fn pose(entity: usize, z: f32) -> MoverPose {
+        MoverPose {
+            entity,
+            model: 1,
+            origin: [0.0, 0.0, z],
+            angles: [0.0; 3],
+        }
+    }
+
+    #[test]
+    fn door_plays_start_then_stop_and_plat_loops() {
+        let entities = parse_entities(
+            r#"{ "classname" "worldspawn" }
+            { "classname" "func_door" "model" "*1" }
+            { "classname" "func_plat" "model" "*2" }
+            { "classname" "func_door" "model" "*3" "noise_start" "silent" }
+            { "classname" "func_button" "model" "*4" }"#,
+        )
+        .unwrap();
+        let bounds = vec![([0.0; 3], [0.0; 3]); 5];
+        let mut m = MoverSounds::from_entities(&entities, &bounds);
+        assert_eq!(m.sounds().len(), 3);
+        assert!(m.update(&[pose(1, 0.0), pose(2, 0.0), pose(3, 0.0)], 0.01).is_empty());
+        let ev = m.update(&[pose(1, 1.0), pose(2, 1.0), pose(3, 1.0)], 0.01);
+        let plays = ev.iter().filter(|e| matches!(e, SoundEvent::Play { .. })).count();
+        let loops = ev.iter().filter(|e| matches!(e, SoundEvent::LoopStart { .. })).count();
+        assert_eq!((plays, loops), (1, 1));
+        let still = [pose(1, 1.0), pose(2, 1.0), pose(3, 1.0)];
+        assert!(m.update(&still, 0.05).is_empty());
+        let ev = m.update(&still, 0.06);
+        let plays = ev.iter().filter(|e| matches!(e, SoundEvent::Play { .. })).count();
+        let stops = ev.iter().filter(|e| matches!(e, SoundEvent::LoopStop { .. })).count();
+        assert_eq!((plays, stops), (2, 1));
+    }
 
     fn speakers(text: &str) -> SpeakerSet {
         SpeakerSet::from_entities(&parse_entities(text).unwrap())
