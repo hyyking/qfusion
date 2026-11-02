@@ -9,6 +9,7 @@ use crate::world::{Content, WorldRenderer};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+#[allow(clippy::too_many_arguments)]
 pub fn screenshot(
     path: &Path,
     content: &Content,
@@ -17,6 +18,7 @@ pub fn screenshot(
     eye: [f32; 3],
     view_angles: [f32; 3],
     (width, height): (u32, u32),
+    fov_x: f32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
@@ -41,7 +43,7 @@ pub fn screenshot(
     });
     let view = target.create_view(&Default::default());
     let depth = create_depth_view(&device, width, height);
-    let mvp = view_projection(eye, view_angles, width as f32 / height as f32);
+    let mvp = view_projection(eye, view_angles, width as f32 / height as f32, fov_x);
     world.prepare(&queue, mvp, eye, 0.0, &[]);
 
     let row_bytes = width * 4;
