@@ -35,7 +35,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
-const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen] [--record FILE] [--screenshot out.png [--shot-eye x,y,z] [--shot-angles p,y,r] [--shot-size WxH]]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen] [--fov 110] [--record FILE] [--screenshot out.png [--shot-eye x,y,z] [--shot-angles p,y,r] [--shot-size WxH]]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
 
 /// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
 /// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
@@ -86,6 +86,8 @@ struct App {
     last_frame: Option<Instant>,
     /// Start in borderless fullscreen (`--fullscreen`).
     fullscreen: bool,
+    /// Horizontal field of view in degrees (`--fov`).
+    fov: f32,
 }
 
 impl App {
@@ -176,6 +178,7 @@ impl App {
             mouse_delta: [0.0; 2],
             last_frame: None,
             fullscreen: false,
+            fov: math::DEFAULT_FOV_X,
         };
         app.start_audio();
         if let Some(path) = record_path {
@@ -464,7 +467,14 @@ impl ApplicationHandler for App {
             }
         }
         let content = load_content(&self.game_dirs, self.map_pk3.as_deref());
-        match render::Renderer::new(window.clone(), &content, &self.bsp, &world_mesh, submodels) {
+        match render::Renderer::new(
+            self.fov,
+            window.clone(),
+            &content,
+            &self.bsp,
+            &world_mesh,
+            submodels,
+        ) {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
                 eprintln!("failed to initialize renderer: {e}");
@@ -860,6 +870,7 @@ struct Options {
     record_path: Option<PathBuf>,
     screenshot: Option<Screenshot>,
     fullscreen: bool,
+    fov: f32,
 }
 
 fn parse_triple(value: Option<String>, flag: &str) -> Result<[f32; 3], String> {
@@ -908,6 +919,7 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
     let mut freeplay = false;
     let mut screenshot: Option<Screenshot> = None;
     let mut fullscreen = false;
+    let mut fov = math::DEFAULT_FOV_X;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--fullscreen" => fullscreen = true,
@@ -958,6 +970,13 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
                     .and_then(|v| v.parse::<f32>().ok())
                     .filter(|v| v.is_finite() && *v > 0.0)
                     .ok_or("--sensitivity requires a positive number")?
+            }
+            "--fov" => {
+                fov = args
+                    .next()
+                    .and_then(|v| v.parse::<f32>().ok())
+                    .filter(|v| *v > 1.0 && *v < 179.0)
+                    .ok_or("--fov requires horizontal degrees between 1 and 179")?
             }
             "--record" => {
                 record_path = Some(PathBuf::from(
@@ -1013,6 +1032,7 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
         sensitivity,
         game_dirs,
         fullscreen,
+        fov,
         map_pk3: input
             .to_lowercase()
             .ends_with(".pk3")
@@ -1034,6 +1054,7 @@ fn take_screenshot(options: &Options, shot: &Screenshot) -> Result<(), Box<dyn s
         shot.eye.unwrap_or(eye),
         shot.angles.unwrap_or(angles),
         shot.size,
+        options.fov,
     )
 }
 
@@ -1075,6 +1096,7 @@ fn main() {
         options.record_path,
     );
     app.fullscreen = options.fullscreen;
+    app.fov = options.fov;
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop error: {e}");
         std::process::exit(1);
