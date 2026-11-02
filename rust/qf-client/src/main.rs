@@ -6,8 +6,10 @@ mod game_sound;
 mod headless;
 mod hud;
 mod hud_layout;
+mod item_models;
 mod math;
 mod menu;
+mod model_render;
 mod render;
 mod world;
 

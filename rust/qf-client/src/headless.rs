@@ -4,6 +4,7 @@ use std::path::Path;
 
 use qf_engine::content::bsp::{Bsp, WorldMesh};
 
+use crate::model_render::{ModelRenderer, props_from_entities};
 use crate::render::{begin_world_pass, create_depth_view, view_projection};
 use crate::world::{Content, WorldRenderer};
 
@@ -25,6 +26,13 @@ pub fn screenshot(
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
 
     let mut world = WorldRenderer::new(&device, &queue, FORMAT, content, bsp, mesh, &[])?;
+    let models = ModelRenderer::new(
+        &device,
+        &queue,
+        FORMAT,
+        content,
+        props_from_entities(&bsp.parsed_entities),
+    );
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("screenshot"),
         size: wgpu::Extent3d {
@@ -43,6 +51,7 @@ pub fn screenshot(
     let depth = create_depth_view(&device, width, height);
     let mvp = view_projection(eye, view_angles, width as f32 / height as f32);
     world.prepare(&queue, mvp, eye, 0.0, &[]);
+    models.prepare(&queue, mvp, eye, 0.0);
 
     let row_bytes = width * 4;
     let padded = row_bytes.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -56,6 +65,7 @@ pub fn screenshot(
     {
         let mut pass = begin_world_pass(&mut encoder, &view, &depth);
         world.draw(&mut pass);
+        models.draw(&mut pass);
     }
     encoder.copy_texture_to_buffer(
         target.as_image_copy(),

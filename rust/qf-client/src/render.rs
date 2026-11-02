@@ -11,6 +11,7 @@ use qf_engine::simulation::entities::MoverPose;
 
 use crate::hud::Canvas;
 use crate::math;
+use crate::model_render::{ModelRenderer, props_from_entities};
 use crate::world::{Content, DEPTH_FORMAT, WorldRenderer};
 
 #[repr(C)]
@@ -153,6 +154,7 @@ impl HudPass {
 pub struct Renderer {
     hud: HudPass,
     world: WorldRenderer,
+    models: ModelRenderer,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -203,11 +205,19 @@ impl Renderer {
             mesh,
             &submodels,
         )?;
+        let models = ModelRenderer::new(
+            &device,
+            &queue,
+            world_format,
+            content,
+            props_from_entities(&bsp.parsed_entities),
+        );
         let depth_view = create_depth_view(&device, config.width, config.height);
         let hud = HudPass::new(&device, config.format);
         Ok(Self {
             hud,
             world,
+            models,
             surface,
             device,
             queue,
@@ -254,6 +264,7 @@ impl Renderer {
         let mvp = view_projection(eye, view_angles, aspect);
         let time = self.start.elapsed().as_secs_f32();
         self.world.prepare(&self.queue, mvp, eye, time, movers);
+        self.models.prepare(&self.queue, mvp, eye, time);
 
         let world_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.world_format),
@@ -264,6 +275,7 @@ impl Renderer {
         {
             let mut pass = begin_world_pass(&mut encoder, &world_view, &self.depth_view);
             self.world.draw(&mut pass);
+            self.models.draw(&mut pass);
         }
         let size = self.size();
         let hud_vertices = self.hud.prepare(&self.device, &self.queue, hud, size);

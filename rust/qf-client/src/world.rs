@@ -253,7 +253,7 @@ fn stage_uniform(stage: &Stage, time: f32) -> StageUniform {
     u
 }
 
-fn blend_factor(f: BlendFactor) -> wgpu::BlendFactor {
+pub(crate) fn blend_factor(f: BlendFactor) -> wgpu::BlendFactor {
     match f {
         BlendFactor::Zero => wgpu::BlendFactor::Zero,
         BlendFactor::One => wgpu::BlendFactor::One,
@@ -337,7 +337,7 @@ struct Builder<'a> {
     next_slot: u32,
 }
 
-fn upload_texture(
+pub(crate) fn upload_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     label: &str,
