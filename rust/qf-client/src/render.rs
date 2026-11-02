@@ -213,7 +213,7 @@ impl Renderer {
             &queue,
             world_format,
             content,
-            props_from_entities(&bsp.parsed_entities),
+            props_from_entities(&bsp.parsed_entities, &bsp.lightgrid),
         );
         let depth_view = create_depth_view(&device, config.width, config.height);
         let hud = HudPass::new(&device, config.format);
