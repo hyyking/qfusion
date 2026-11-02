@@ -10,6 +10,8 @@ use qf_engine::simulation::pmove::{PMFEAT_DASH, PMFEAT_JUMP, PMFEAT_WALLJUMP, Pm
 use qf_engine::simulation::walk::{ModeSimulation, MovementMode};
 
 use crate::hud::{Anchor, Canvas, HAnchor, Rect, Screen, VAnchor, text_size};
+use crate::loadout::Loadout;
+use crate::menu::TeamChoice;
 
 const LOCKED_SPEED: i32 = 100;
 
@@ -17,6 +19,9 @@ pub struct BombSession {
     host: GameHost,
     player: usize,
     unlocked_stats: Option<PmoveStats>,
+    spectating: bool,
+    /// Last accepted loadout choices (the script is authoritative).
+    pub loadout: Loadout,
     pub hud: BombHud,
 }
 
@@ -29,6 +34,8 @@ impl BombSession {
             host,
             player,
             unlocked_stats: None,
+            spectating: false,
+            loadout: Loadout::default(),
             hud: BombHud::default(),
         })
     }
@@ -73,6 +80,10 @@ impl BombSession {
             }
         }
         self.hud = BombHud::from_values(&self.host.hud(self.player)?);
+        if self.spectating && self.hud.alive {
+            // The gametype has no spectator state; keep the player out of the round.
+            self.command("suicide", "");
+        }
         Ok(respawned)
     }
 
@@ -98,19 +109,64 @@ impl BombSession {
         }
     }
 
-    pub fn command(&mut self, name: &str, args: &str) {
+    pub fn command(&mut self, name: &str, args: &str) -> bool {
         match self.host.command(self.player, name, args) {
-            Ok(true) => {}
-            Ok(false) => println!("{name}: not allowed right now"),
-            Err(error) => eprintln!("{name}: {error}"),
+            Ok(true) => true,
+            Ok(false) => {
+                println!("{name}: not allowed right now");
+                false
+            }
+            Err(error) => {
+                eprintln!("{name}: {error}");
+                false
+            }
         }
     }
 
-    pub fn switch_team(&mut self) {
-        let team = match self.host.player(self.player).team {
-            Team::Alpha => Team::Beta,
-            Team::Beta => Team::Alpha,
+    pub fn set_primary(&mut self, pair: [&'static str; 2]) {
+        if let Some(args) = Loadout::primary_args(pair)
+            && self.command("primary", &args)
+        {
+            self.loadout.primary = pair;
+        }
+    }
+
+    pub fn set_secondary(&mut self, weapon: &'static str) {
+        if Loadout::is_valid_secondary(weapon) && self.command("secondary", weapon) {
+            self.loadout.secondary = weapon;
+        }
+    }
+
+    pub fn team_choice(&self) -> TeamChoice {
+        if self.spectating {
+            return TeamChoice::Spectator;
+        }
+        match self.host.player(self.player).team {
+            Team::Alpha => TeamChoice::Alpha,
+            Team::Beta => TeamChoice::Beta,
+        }
+    }
+
+    /// Joins `choice`. Spectating switches the player to noclip; joining a team returns to walking.
+    pub fn set_team(&mut self, choice: TeamChoice, simulation: &mut ModeSimulation) {
+        if choice == self.team_choice() {
+            return;
+        }
+        let team = match choice {
+            TeamChoice::Alpha => Team::Alpha,
+            TeamChoice::Beta => Team::Beta,
+            TeamChoice::Spectator => {
+                self.spectating = true;
+                if simulation.mode().is_walking() {
+                    simulation.toggle_mode();
+                }
+                return;
+            }
         };
+        self.spectating = false;
+        if !simulation.mode().is_walking() {
+            simulation.toggle_mode();
+        }
         if let Err(error) = self.host.change_team(self.player, team) {
             eprintln!("team change: {error}");
         }

@@ -268,7 +268,12 @@ pub(crate) fn blend_factor(f: BlendFactor) -> wgpu::BlendFactor {
     }
 }
 
-type PipelineKey = (Option<(wgpu::BlendFactor, wgpu::BlendFactor)>, bool, bool);
+type PipelineKey = (
+    Option<(wgpu::BlendFactor, wgpu::BlendFactor)>,
+    bool,
+    bool,
+    bool,
+);
 
 struct StageDraw {
     slot: u32,
@@ -390,7 +395,12 @@ impl Builder<'_> {
         let blend = stage
             .blend
             .map(|Blend { src, dst }| (blend_factor(src), blend_factor(dst)));
-        let key = (blend, stage.depth_write, stage.depth_equal);
+        let key = (
+            blend,
+            stage.depth_write,
+            stage.depth_equal,
+            stage.polygon_offset,
+        );
         if let Some(&id) = self.pipeline_ids.get(&key) {
             return id;
         }
@@ -444,7 +454,16 @@ impl Builder<'_> {
                         wgpu::CompareFunction::GreaterEqual
                     }),
                     stencil: Default::default(),
-                    bias: Default::default(),
+                    // Reversed-Z: larger depth is nearer, so a positive bias pulls toward the viewer.
+                    bias: if stage.polygon_offset {
+                        wgpu::DepthBiasState {
+                            constant: 16,
+                            slope_scale: 2.0,
+                            clamp: 0.0,
+                        }
+                    } else {
+                        Default::default()
+                    },
                 }),
                 multisample: Default::default(),
                 multiview_mask: None,

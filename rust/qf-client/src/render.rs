@@ -163,10 +163,13 @@ pub struct Renderer {
     world_format: wgpu::TextureFormat,
     depth_view: wgpu::TextureView,
     start: Instant,
+    /// Horizontal field of view in degrees.
+    fov_x: f32,
 }
 
 impl Renderer {
     pub fn new(
+        fov_x: f32,
         window: Arc<Window>,
         content: &Content,
         bsp: &Bsp,
@@ -225,6 +228,7 @@ impl Renderer {
             world_format,
             depth_view,
             start: Instant::now(),
+            fov_x,
         })
     }
 
@@ -261,7 +265,7 @@ impl Renderer {
         };
 
         let aspect = self.config.width as f32 / self.config.height as f32;
-        let mvp = view_projection(eye, view_angles, aspect);
+        let mvp = view_projection(eye, view_angles, aspect, self.fov_x);
         let time = self.start.elapsed().as_secs_f32();
         self.world.prepare(&self.queue, mvp, eye, time, movers);
         self.models.prepare(&self.queue, mvp, eye, time);
@@ -307,8 +311,13 @@ impl Renderer {
 }
 
 /// Perspective view-projection for the persistent client view angles (pitch, yaw, roll).
-pub fn view_projection(eye: [f32; 3], view_angles: [f32; 3], aspect: f32) -> [[f32; 4]; 4] {
-    let fov_y = std::f32::consts::FRAC_PI_2;
+pub fn view_projection(
+    eye: [f32; 3],
+    view_angles: [f32; 3],
+    aspect: f32,
+    fov_x_degrees: f32,
+) -> [[f32; 4]; 4] {
+    let fov_y = math::fov_y_from_x(fov_x_degrees, aspect);
     let [pitch, yaw, _] = view_angles.map(f32::to_radians);
     let forward = [
         pitch.cos() * yaw.cos(),

@@ -5,12 +5,16 @@ mod bomb;
 mod game_sound;
 mod headless;
 mod hud;
+mod hud_editor;
 mod hud_layout;
 mod item_models;
+mod keybinds;
+mod loadout;
 mod math;
 mod menu;
 mod model_render;
 mod render;
+mod weapon_hud;
 mod world;
 
 use std::collections::HashSet;
@@ -33,7 +37,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
-const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen] [--record FILE] [--screenshot out.png [--shot-eye x,y,z] [--shot-angles p,y,r] [--shot-size WxH]]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen] [--fov 110] [--record FILE] [--screenshot out.png [--shot-eye x,y,z] [--shot-angles p,y,r] [--shot-size WxH]]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
 
 /// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
 /// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
@@ -63,6 +67,8 @@ struct App {
     hud_ups: hud::UpsCounter,
     hud_fps: hud::FpsCounter,
     hud_record: hud::RecordIndicator,
+    /// Fed once the client runs on Sim (no inventory before that).
+    weapon_hud: weapon_hud::WeaponHud,
     recorder: Option<Recorder>,
     record_path: Option<PathBuf>,
     map: MapIdentity,
@@ -70,6 +76,9 @@ struct App {
     sensitivity: f32,
     mouse_grabbed: bool,
     menu: menu::Menu,
+    keybinds: keybinds::Keybinds,
+    layout: hud_layout::HudLayout,
+    hud_editor: Option<hud_editor::HudEditor>,
     /// Last cursor position in window pixels, for menu hit-testing.
     cursor: [f32; 2],
     /// The first raw motion after a grab can carry a stale jump; drop it.
@@ -79,6 +88,8 @@ struct App {
     last_frame: Option<Instant>,
     /// Start in borderless fullscreen (`--fullscreen`).
     fullscreen: bool,
+    /// Horizontal field of view in degrees (`--fov`).
+    fov: f32,
 }
 
 impl App {
@@ -119,12 +130,24 @@ impl App {
             }
             None => hud_layout::HudLayout::default(),
         };
+        let keybinds = match keybinds::keybinds_path() {
+            Some(path) => {
+                let (binds, warnings) = keybinds::Keybinds::load(&path);
+                for warning in warnings {
+                    eprintln!("keybinds: {warning}");
+                }
+                binds
+            }
+            None => keybinds::Keybinds::default(),
+        };
         let mut hud_ups = hud::UpsCounter::new();
         hud_ups.set_layout(layout.get(hud_layout::UPS));
         let mut hud_fps = hud::FpsCounter::new();
         hud_fps.set_layout(layout.get(hud_layout::FPS));
         let mut hud_record = hud::RecordIndicator::new();
         hud_record.set_layout(layout.get(hud_layout::RECORD));
+        let mut weapon_hud = weapon_hud::WeaponHud::new();
+        weapon_hud.set_layout(&layout);
         let mut app = Self {
             window: None,
             renderer: None,
@@ -141,6 +164,7 @@ impl App {
             hud_ups,
             hud_fps,
             hud_record,
+            weapon_hud,
             recorder: None,
             record_path: None,
             map,
@@ -148,11 +172,15 @@ impl App {
             sensitivity,
             mouse_grabbed: false,
             menu: menu::Menu::pause(),
+            keybinds,
+            layout,
+            hud_editor: None,
             cursor: [0.0; 2],
             skip_next_motion: false,
             mouse_delta: [0.0; 2],
             last_frame: None,
             fullscreen: false,
+            fov: math::DEFAULT_FOV_X,
         };
         app.start_audio();
         if let Some(path) = record_path {
@@ -277,7 +305,56 @@ impl App {
         }
     }
 
+    /// Whether a menu or the HUD editor owns the input (gameplay input is neutral).
+    fn ui_active(&self) -> bool {
+        self.menu.is_open() || self.hud_editor.is_some()
+    }
+
+    fn apply_layout(&mut self, layout: &hud_layout::HudLayout) {
+        self.hud_ups.set_layout(layout.get(hud_layout::UPS));
+        self.hud_fps.set_layout(layout.get(hud_layout::FPS));
+        self.hud_record.set_layout(layout.get(hud_layout::RECORD));
+        self.weapon_hud.set_layout(layout);
+        self.layout = layout.clone();
+    }
+
+    fn start_hud_editor(&mut self) {
+        self.menu.close();
+        self.hud_editor = Some(hud_editor::HudEditor::new(&self.layout));
+        self.set_mouse_grab(false);
+    }
+
+    fn finish_editor(&mut self, outcome: hud_editor::EditorOutcome) {
+        use hud_editor::EditorOutcome;
+        match outcome {
+            EditorOutcome::None => {}
+            EditorOutcome::Changed => {
+                if let Some(editor) = &self.hud_editor {
+                    let layout = editor.layout().clone();
+                    self.apply_layout(&layout);
+                }
+            }
+            EditorOutcome::Save(layout) => {
+                self.apply_layout(&layout);
+                if let Some(path) = hud_layout::layout_path()
+                    && let Err(error) = layout.save(&path)
+                {
+                    eprintln!("hud layout not saved: {}: {error}", path.display());
+                }
+                self.hud_editor = None;
+                self.set_mouse_grab(true);
+            }
+            EditorOutcome::Cancel => {
+                if let Some(editor) = self.hud_editor.take() {
+                    self.apply_layout(editor.original());
+                }
+                self.set_mouse_grab(true);
+            }
+        }
+    }
+
     fn open_menu(&mut self) {
+        self.menu = menu::Menu::pause();
         self.menu.open();
         self.set_mouse_grab(false);
     }
@@ -289,6 +366,34 @@ impl App {
                 self.set_mouse_grab(true);
             }
             menu::UiAction::Quit => event_loop.exit(),
+            menu::UiAction::EditHud => self.start_hud_editor(),
+            menu::UiAction::OpenMenu(id) => {
+                if let Some(bomb) = &self.bomb {
+                    self.menu = bomb.loadout.menu(id);
+                    self.menu.open();
+                }
+            }
+            menu::UiAction::SetPrimary(pair) => {
+                if let Some(bomb) = &mut self.bomb {
+                    bomb.set_primary(pair);
+                    self.menu = bomb.loadout.menu(loadout::MenuId::Loadout);
+                    self.menu.open();
+                }
+            }
+            menu::UiAction::SetSecondary(weapon) => {
+                if let Some(bomb) = &mut self.bomb {
+                    bomb.set_secondary(weapon);
+                    self.menu = bomb.loadout.menu(loadout::MenuId::Loadout);
+                    self.menu.open();
+                }
+            }
+            menu::UiAction::SetTeam(choice) => {
+                if let Some(bomb) = &mut self.bomb {
+                    bomb.set_team(choice, &mut self.simulation);
+                }
+                self.menu.close();
+                self.set_mouse_grab(true);
+            }
             menu::UiAction::Command { name, args } => {
                 if let Some(bomb) = &mut self.bomb {
                     bomb.command(&name, &args);
@@ -364,7 +469,14 @@ impl ApplicationHandler for App {
             }
         }
         let content = load_content(&self.game_dirs, self.map_pk3.as_deref());
-        match render::Renderer::new(window.clone(), &content, &self.bsp, &world_mesh, submodels) {
+        match render::Renderer::new(
+            self.fov,
+            window.clone(),
+            &content,
+            &self.bsp,
+            &world_mesh,
+            submodels,
+        ) {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
                 eprintln!("failed to initialize renderer: {e}");
@@ -401,6 +513,34 @@ impl ApplicationHandler for App {
                     }
                 }
                 if event.state == ElementState::Pressed && !event.repeat {
+                    if self.hud_editor.is_some() {
+                        let shift = self.pressed_keys.contains(&KeyCode::ShiftLeft)
+                            || self.pressed_keys.contains(&KeyCode::ShiftRight);
+                        let key = match &event.logical_key {
+                            Key::Named(NamedKey::Tab) if shift => Some(hud_editor::EditorKey::Prev),
+                            Key::Named(NamedKey::Tab) => Some(hud_editor::EditorKey::Next),
+                            Key::Named(NamedKey::Enter) => Some(hud_editor::EditorKey::Save),
+                            Key::Named(NamedKey::Escape) => Some(hud_editor::EditorKey::Cancel),
+                            Key::Character(c) => match c.as_str() {
+                                "e" | "E" => Some(hud_editor::EditorKey::Toggle),
+                                "+" | "=" => Some(hud_editor::EditorKey::ScaleUp),
+                                "-" | "_" => Some(hud_editor::EditorKey::ScaleDown),
+                                "c" => Some(hud_editor::EditorKey::NextColor),
+                                "C" => Some(hud_editor::EditorKey::PrevColor),
+                                "r" => Some(hud_editor::EditorKey::Reset),
+                                "R" => Some(hud_editor::EditorKey::ResetAll),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let Some(key) = key {
+                            let outcome = self.hud_editor.as_mut().map(|e| e.key(key));
+                            if let Some(outcome) = outcome {
+                                self.finish_editor(outcome);
+                            }
+                        }
+                        return;
+                    }
                     if self.menu.is_open() {
                         let shift = self.pressed_keys.contains(&KeyCode::ShiftLeft)
                             || self.pressed_keys.contains(&KeyCode::ShiftRight);
@@ -452,24 +592,35 @@ impl ApplicationHandler for App {
                                 self.start_recording(None);
                             }
                         }
-                        Key::Character(ref key) if key.eq_ignore_ascii_case("b") => {
-                            self.play_sound()
-                        }
-                        Key::Character(ref key) if key.eq_ignore_ascii_case("g") => {
-                            if let Some(bomb) = &mut self.bomb {
-                                bomb.command("drop", "");
+                        Key::Character(ref typed) => match self.keybinds.action_for(typed) {
+                            Some(keybinds::Action::SoundTest) => self.play_sound(),
+                            Some(keybinds::Action::DropBomb) => {
+                                if let Some(bomb) = &mut self.bomb {
+                                    bomb.command("drop", "");
+                                }
                             }
-                        }
-                        Key::Character(ref key) if key.eq_ignore_ascii_case("k") => {
-                            if let Some(bomb) = &mut self.bomb {
-                                bomb.command("suicide", "");
+                            Some(keybinds::Action::Suicide) => {
+                                if let Some(bomb) = &mut self.bomb {
+                                    bomb.command("suicide", "");
+                                }
                             }
-                        }
-                        Key::Character(ref key) if key.eq_ignore_ascii_case("t") => {
-                            if let Some(bomb) = &mut self.bomb {
-                                bomb.switch_team();
+                            Some(keybinds::Action::LoadoutMenu) => {
+                                if let Some(bomb) = &self.bomb {
+                                    self.menu = bomb.loadout.menu(loadout::MenuId::Loadout);
+                                    self.menu.open();
+                                    self.set_mouse_grab(false);
+                                }
                             }
-                        }
+                            Some(keybinds::Action::TeamMenu) => {
+                                if let Some(bomb) = &self.bomb {
+                                    self.menu = menu::Menu::team(bomb.team_choice());
+                                    self.menu.open();
+                                    self.set_mouse_grab(false);
+                                }
+                            }
+                            Some(keybinds::Action::HudEditor) => self.start_hud_editor(),
+                            None => {}
+                        },
                         _ => {}
                     }
                 }
@@ -478,6 +629,29 @@ impl ApplicationHandler for App {
                 self.cursor = [position.x as f32, position.y as f32];
                 let screen = self.screen();
                 self.menu.hover(&screen, self.cursor);
+                let cursor = self.cursor;
+                let outcome = self
+                    .hud_editor
+                    .as_mut()
+                    .map(|editor| editor.pointer_move(&screen, cursor));
+                if let Some(outcome) = outcome {
+                    self.finish_editor(outcome);
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } if self.hud_editor.is_some() => {
+                let screen = self.screen();
+                let cursor = self.cursor;
+                if let Some(editor) = &mut self.hud_editor {
+                    if state == ElementState::Pressed {
+                        editor.pointer_down(&screen, cursor);
+                    } else {
+                        editor.pointer_up();
+                    }
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -505,7 +679,7 @@ impl ApplicationHandler for App {
                 self.set_mouse_grab(false);
             }
             WindowEvent::Focused(true) => {
-                if !self.menu.is_open() {
+                if !self.ui_active() {
                     self.set_mouse_grab(true);
                 }
             }
@@ -541,7 +715,7 @@ impl ApplicationHandler for App {
                 } else {
                     self.key_axis(KeyCode::KeyR, KeyCode::KeyF)
                 };
-                let in_game = !self.menu.is_open();
+                let in_game = !self.ui_active();
                 let command = WalkCommand {
                     forward: if in_game {
                         self.key_axis(KeyCode::KeyW, KeyCode::KeyS)
@@ -635,11 +809,15 @@ impl ApplicationHandler for App {
                     self.hud_ups.draw(&screen, &mut self.hud_canvas);
                     self.hud_fps.draw(&screen, &mut self.hud_canvas);
                     self.hud_record.draw(&screen, &mut self.hud_canvas);
+                    self.weapon_hud.draw(&screen, &mut self.hud_canvas);
                     if let Some(bomb) = &self.bomb {
                         bomb.hud.draw(&screen, &mut self.hud_canvas);
                     }
                     self.menu
                         .draw(&screen, Some(self.cursor), &mut self.hud_canvas);
+                    if let Some(editor) = &self.hud_editor {
+                        editor.draw(&screen, &mut self.hud_canvas);
+                    }
                     let movers = self
                         .simulation
                         .entities()
@@ -694,6 +872,7 @@ struct Options {
     record_path: Option<PathBuf>,
     screenshot: Option<Screenshot>,
     fullscreen: bool,
+    fov: f32,
 }
 
 fn parse_triple(value: Option<String>, flag: &str) -> Result<[f32; 3], String> {
@@ -742,6 +921,7 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
     let mut freeplay = false;
     let mut screenshot: Option<Screenshot> = None;
     let mut fullscreen = false;
+    let mut fov = math::DEFAULT_FOV_X;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--fullscreen" => fullscreen = true,
@@ -792,6 +972,13 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
                     .and_then(|v| v.parse::<f32>().ok())
                     .filter(|v| v.is_finite() && *v > 0.0)
                     .ok_or("--sensitivity requires a positive number")?
+            }
+            "--fov" => {
+                fov = args
+                    .next()
+                    .and_then(|v| v.parse::<f32>().ok())
+                    .filter(|v| *v > 1.0 && *v < 179.0)
+                    .ok_or("--fov requires horizontal degrees between 1 and 179")?
             }
             "--record" => {
                 record_path = Some(PathBuf::from(
@@ -847,6 +1034,7 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
         sensitivity,
         game_dirs,
         fullscreen,
+        fov,
         map_pk3: input
             .to_lowercase()
             .ends_with(".pk3")
@@ -868,6 +1056,7 @@ fn take_screenshot(options: &Options, shot: &Screenshot) -> Result<(), Box<dyn s
         shot.eye.unwrap_or(eye),
         shot.angles.unwrap_or(angles),
         shot.size,
+        options.fov,
     )
 }
 
@@ -909,6 +1098,7 @@ fn main() {
         options.record_path,
     );
     app.fullscreen = options.fullscreen;
+    app.fov = options.fov;
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop error: {e}");
         std::process::exit(1);

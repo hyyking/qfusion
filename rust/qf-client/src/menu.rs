@@ -19,11 +19,26 @@ pub enum InputContext {
 pub enum UiAction {
     Resume,
     Quit,
+    /// Open the HUD layout editor.
+    EditHud,
+    /// Join a team or spectate.
+    SetTeam(TeamChoice),
+    OpenMenu(crate::loadout::MenuId),
+    SetPrimary([&'static str; 2]),
+    SetSecondary(&'static str),
     /// A gametype command (for example `primary` / `secondary`).
     Command {
         name: String,
         args: String,
     },
+}
+
+/// Where the local player plays. Spectator is a free-flying noclip view outside the match.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TeamChoice {
+    Alpha,
+    Beta,
+    Spectator,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,9 +113,33 @@ impl Menu {
                     action: UiAction::Resume,
                 },
                 MenuItem {
+                    label: "HUD LAYOUT".into(),
+                    action: UiAction::EditHud,
+                },
+                MenuItem {
                     label: "QUIT".into(),
                     action: UiAction::Quit,
                 },
+            ],
+        )
+    }
+
+    /// Team join screen; the current choice is marked with `>`.
+    pub fn team(current: TeamChoice) -> Self {
+        let item = |label: &str, choice: TeamChoice| MenuItem {
+            label: if choice == current {
+                format!("> {label}")
+            } else {
+                label.to_owned()
+            },
+            action: UiAction::SetTeam(choice),
+        };
+        Self::new(
+            "JOIN TEAM",
+            vec![
+                item("ALPHA", TeamChoice::Alpha),
+                item("BETA", TeamChoice::Beta),
+                item("SPECTATE", TeamChoice::Spectator),
             ],
         )
     }
@@ -296,6 +335,23 @@ mod tests {
     }
 
     #[test]
+    fn team_menu_marks_current_and_emits_choices() {
+        let mut menu = Menu::team(TeamChoice::Beta);
+        menu.open();
+        let labels: Vec<_> = menu.items().iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["ALPHA", "> BETA", "SPECTATE"]);
+        assert_eq!(
+            menu.key(MenuKey::Activate),
+            Some(UiAction::SetTeam(TeamChoice::Alpha))
+        );
+        menu.key(MenuKey::Up);
+        assert_eq!(
+            menu.key(MenuKey::Activate),
+            Some(UiAction::SetTeam(TeamChoice::Spectator))
+        );
+    }
+
+    #[test]
     fn toggle_switches_context() {
         let mut menu = Menu::pause();
         menu.toggle();
@@ -308,7 +364,7 @@ mod tests {
     fn keys_wrap_and_activate() {
         let mut menu = open_menu();
         assert_eq!(menu.key(MenuKey::Up), None);
-        assert_eq!(menu.selected(), 1);
+        assert_eq!(menu.selected(), 2);
         assert_eq!(menu.key(MenuKey::Activate), Some(UiAction::Quit));
         menu.key(MenuKey::Down);
         assert_eq!(menu.selected(), 0);
@@ -322,7 +378,7 @@ mod tests {
         let (panel, items) = menu.layout(&SCREEN);
         assert!((panel.x + panel.w * 0.5 - 500.0).abs() < 0.01);
         assert!((panel.y + panel.h * 0.5 - 300.0).abs() < 0.01);
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         for b in &items {
             assert!(panel.contains([b.x, b.y]));
             assert!(panel.contains([b.x + b.w - 1.0, b.y + b.h - 1.0]));

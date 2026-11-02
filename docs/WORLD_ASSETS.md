@@ -65,7 +65,7 @@ Next: render them (static frame 0), then pickup wiring, entity sounds, lightgrid
 - Post-processing and fog volumes.
 - Sky cloud layers (`skyparms` near box), sun, and `deformvertexes`.
 - GLSL `material` details (normal maps, gloss), real team colours and viewer distance for
-  `distanceramp`, `polygonoffset`, `videomap`/`surroundmap`.
+  `distanceramp`, `videomap`/`surroundmap`.
 - Face culling (surface winding is not yet trusted, everything is double sided).
 - Skybox face orientation of the side faces needs a visual check on more maps.
 - Lightgrid/lightarray lumps are not decoded; they only light models, so they wait for model rendering.

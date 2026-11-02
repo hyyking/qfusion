@@ -89,7 +89,9 @@ impl Md3Model {
     }
 
     pub fn tag(&self, frame: usize, name: &str) -> Option<&Md3Tag> {
-        self.frame_tags(frame).iter().find(|t| t.name.eq_ignore_ascii_case(name))
+        self.frame_tags(frame)
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(name))
     }
 }
 
@@ -116,7 +118,11 @@ impl Reader<'_> {
     }
 
     fn vec3(&self, ofs: usize, what: &'static str) -> Result<[f32; 3], Md3Error> {
-        Ok([self.f32(ofs, what)?, self.f32(ofs + 4, what)?, self.f32(ofs + 8, what)?])
+        Ok([
+            self.f32(ofs, what)?,
+            self.f32(ofs + 4, what)?,
+            self.f32(ofs + 8, what)?,
+        ])
     }
 
     fn string(&self, ofs: usize, len: usize, what: &'static str) -> Result<String, Md3Error> {
@@ -173,7 +179,11 @@ pub fn parse(data: &[u8]) -> Result<Md3Model, Md3Error> {
         for (k, row) in axis.iter_mut().enumerate() {
             *row = r.vec3(o + 76 + k * 12, "tag")?;
         }
-        tags.push(Md3Tag { name: r.string(o, 64, "tag")?, origin: r.vec3(o + 64, "tag")?, axis });
+        tags.push(Md3Tag {
+            name: r.string(o, 64, "tag")?,
+            origin: r.vec3(o + 64, "tag")?,
+            axis,
+        });
     }
 
     let mut surfaces = Vec::with_capacity(num_surfaces.min(256));
@@ -199,7 +209,8 @@ pub fn parse(data: &[u8]) -> Result<Md3Model, Md3Error> {
             let o = so + ofs_tris + i * 12;
             let mut t = [0u32; 3];
             for (k, v) in t.iter_mut().enumerate() {
-                *v = u32::try_from(r.i32(o + k * 4, "triangle")?).map_err(|_| Md3Error::BadIndex)?;
+                *v =
+                    u32::try_from(r.i32(o + k * 4, "triangle")?).map_err(|_| Md3Error::BadIndex)?;
                 if *v as usize >= num_verts {
                     return Err(Md3Error::BadIndex);
                 }
@@ -235,7 +246,13 @@ pub fn parse(data: &[u8]) -> Result<Md3Model, Md3Error> {
         so += ofs_end;
     }
 
-    Ok(Md3Model { name, frames, tags, num_tags, surfaces })
+    Ok(Md3Model {
+        name,
+        frames,
+        tags,
+        num_tags,
+        surfaces,
+    })
 }
 
 #[cfg(test)]
@@ -271,7 +288,9 @@ mod tests {
         }
         fixed(&mut b, "f0", 16);
         fixed(&mut b, "tag_x", 64);
-        for v in [1.0f32, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        for v in [
+            1.0f32, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        ] {
             put(&mut b, v.to_bits() as i32);
         }
         let surf_start = b.len();

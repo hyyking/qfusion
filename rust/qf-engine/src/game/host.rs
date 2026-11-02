@@ -17,6 +17,7 @@ use crate::content::bsp::{Bsp, Model};
 use crate::simulation::bsp_world::BspWorld;
 use crate::simulation::entities::{BrushModels, Gametype, MapEntities, MoverWorld, TriggerEvent};
 use crate::simulation::pmove::{PmTrace, PmoveWorld, Vec3};
+use crate::simulation::sim::Sim;
 
 use super::combat::{Player, Team};
 use super::firing::WeaponEvent;
@@ -147,8 +148,7 @@ impl GameEvent {
 
 struct Core {
     now: u64,
-    roster: Roster,
-    map: MapEntities,
+    sim: Sim,
     models: Arc<dyn GameModels>,
     entities: rhai::Array,
     world: Arc<dyn GameWorld>,
@@ -160,7 +160,7 @@ struct Core {
 impl Core {
     /// Static collision plus the map's brush movers at their current pose.
     fn trace(&self, start: Vec3, mins: Vec3, maxs: Vec3, end: Vec3) -> PmTrace {
-        MoverWorld::new(&*self.world, &*self.models, self.map.mover_poses()).trace(
+        MoverWorld::new(&*self.world, &*self.models, self.sim.map().mover_poses()).trace(
             start,
             mins,
             maxs,
@@ -169,14 +169,18 @@ impl Core {
         )
     }
 
+    fn roster(&mut self) -> Roster<'_> {
+        Roster::new(self.sim.map_mut().world_mut())
+    }
+
     /// Runs the map's due thinks and forwards use-chain events to the script queue.
     fn run_map(&mut self) {
-        self.map.think(self.now as i64);
+        self.sim.map_mut().think(self.now as i64);
         self.forward_map_events();
     }
 
     fn forward_map_events(&mut self) {
-        for event in self.map.drain_events() {
+        for event in self.sim.map_mut().drain_events() {
             let (kind, fields) = match event {
                 TriggerEvent::Used { source, target } => (
                     "use",
@@ -205,7 +209,7 @@ impl Game {
         let mut core = self.core();
         let player = usize::try_from(id)
             .ok()
-            .and_then(|id| core.roster.get_mut(id))
+            .and_then(|id| core.roster().get_mut(id))
             .ok_or_else(|| format!("no such player {id}"))?;
         Ok(f(player))
     }
@@ -273,7 +277,75 @@ fn export_entity(entity: &Entity, models: &[Model]) -> Map {
     map
 }
 
+fn field_number(entity: &Map, key: &str, default: f64) -> f64 {
+    entity
+        .get(key)
+        .and_then(|v| v.clone().into_string().ok())
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(default)
+}
+
+/// The `target_explosion` / `func_explosive` entities named `target`, as blast
+/// descriptions (`origin`, `radius`, `damage`, `delay` in ms) in map order. Defaults
+/// follow the legacy `G_Spawn` rules: radius falls back to `dmg + 100`, damage is at least 1.
+fn map_explosives(entities: &[Dynamic], target: &str) -> rhai::Array {
+    let mut blasts = rhai::Array::new();
+    for entity in entities {
+        let Some(entity) = entity.read_lock::<Map>() else {
+            continue;
+        };
+        let text = |key: &str| entity.get(key).and_then(|v| v.clone().into_string().ok());
+        let (Some(name), Some(class)) = (text("targetname"), text("classname")) else {
+            continue;
+        };
+        if name != target {
+            continue;
+        }
+        let mut damage = field_number(&entity, "dmg", 0.0);
+        let mut radius = field_number(&entity, "radius", 0.0);
+        if radius <= 0.0 {
+            radius = damage + 100.0;
+        }
+        let delay = field_number(&entity, "delay", 0.0);
+        damage = damage.max(1.0);
+        let origin = match class.to_ascii_lowercase().as_str() {
+            "target_explosion" => entity
+                .get("origin")
+                .and_then(|v| v.clone().into_array().ok()),
+            "func_explosive" => entity
+                .get("bounds")
+                .and_then(|v| v.clone().try_cast::<Map>())
+                .and_then(|b| {
+                    let mins = b.get("mins")?.clone().into_array().ok()?;
+                    let maxs = b.get("maxs")?.clone().into_array().ok()?;
+                    let centre = |i: usize| -> Option<Dynamic> {
+                        let (lo, hi) =
+                            (mins.get(i)?.as_float().ok()?, maxs.get(i)?.as_float().ok()?);
+                        Some(Dynamic::from_float((lo + hi) * 0.5))
+                    };
+                    Some(vec![centre(0)?, centre(1)?, centre(2)?])
+                }),
+            _ => None,
+        };
+        let Some(origin) = origin else { continue };
+        let mut blast = Map::new();
+        blast.insert("origin".into(), Dynamic::from(origin));
+        blast.insert("radius".into(), Dynamic::from_float(radius));
+        blast.insert("damage".into(), Dynamic::from_float(damage));
+        blast.insert(
+            "delay".into(),
+            Dynamic::from((delay * 1000.0).round() as i64),
+        );
+        blasts.push(Dynamic::from(blast));
+    }
+    blasts
+}
+
 fn register_api(engine: &mut Engine) {
+    engine.register_fn("explosives", |g: &mut Game, target: &str| {
+        map_explosives(&g.core().entities, target)
+    });
     engine.register_type_with_name::<Game>("Game");
     engine.register_fn("now", |g: &mut Game| g.core().now as i64);
     engine.register_fn("rand", |g: &mut Game, count: i64| -> ScriptResult<i64> {
@@ -320,10 +392,10 @@ fn register_api(engine: &mut Engine) {
          falloff: bool|
          -> ScriptResult<rhai::Array> {
             let origin = to_vec3(&origin)?;
-            let core = g.core();
+            let mut core = g.core();
             let mut hits = rhai::Array::new();
-            for slot in 0..core.roster.len() {
-                let Some(player) = core.roster.get(slot).filter(|p| p.alive) else {
+            for slot in 0..core.roster().len() {
+                let Some(player) = core.roster().get(slot).filter(|p| p.alive) else {
                     continue;
                 };
                 let target = add(player.origin, [0.0, 0.0, 8.0]);
@@ -358,7 +430,7 @@ fn register_api(engine: &mut Engine) {
         |g: &mut Game, index: i64| -> ScriptResult<bool> {
             let mut core = g.core();
             let (index, now) = (entity_index(index)?, core.now as i64);
-            let fired = core.map.activate(index, now);
+            let fired = core.sim.map_mut().activate(index, now);
             core.forward_map_events();
             Ok(fired)
         },
@@ -368,7 +440,7 @@ fn register_api(engine: &mut Engine) {
         |g: &mut Game, index: i64| -> ScriptResult<bool> {
             let mut core = g.core();
             let (index, now) = (entity_index(index)?, core.now as i64);
-            let fired = core.map.use_targets_of(index, now);
+            let fired = core.sim.map_mut().use_targets_of(index, now);
             core.forward_map_events();
             Ok(fired)
         },
@@ -379,7 +451,9 @@ fn register_api(engine: &mut Engine) {
             Ok(g.core().world_bounds.contains(to_vec3(&point)?))
         },
     );
-    engine.register_fn("player_count", |g: &mut Game| g.core().roster.len() as i64);
+    engine.register_fn("player_count", |g: &mut Game| {
+        g.core().roster().len() as i64
+    });
     engine.register_fn("team", |g: &mut Game, id: i64| {
         g.player_mut(id, |p| p.team.index() as i64)
     });
@@ -507,7 +581,7 @@ fn register_api(engine: &mut Engine) {
         },
     );
     engine.register_fn("set_movement_locked", |g: &mut Game, locked: bool| {
-        g.core().roster.set_movement_locked(locked);
+        g.core().roster().set_movement_locked(locked);
     });
     engine.register_fn("emit", |g: &mut Game, kind: &str, data: Map| {
         let fields = data
@@ -670,10 +744,14 @@ impl GameHost {
         register_api(&mut engine);
         let ast = engine.compile(script).map_err(script_error)?;
         let hooks = ast.iter_functions().map(|f| f.name.to_string()).collect();
+        let mut sim = Sim::new(
+            MapEntities::spawn_for_gametype(entities, &*brush, &Gametype::bomb()),
+            seed,
+        );
+        Roster::init(sim.map_mut().world_mut());
         let game = Game(Arc::new(Mutex::new(Core {
             now: 0,
-            roster: Roster::new(),
-            map: MapEntities::spawn_for_gametype(entities, &*brush, &Gametype::bomb()),
+            sim,
             models: brush,
             entities: entities
                 .iter()
@@ -809,13 +887,13 @@ impl GameHost {
         }
         for id in 0..self.player_count() {
             let values = self.compute_hud(id)?;
-            self.game.core().roster.publish_hud(id, values);
+            self.game.core().roster().publish_hud(id, values);
         }
         Ok(())
     }
 
     pub fn add_player(&mut self, team: Team) -> Result<usize, GameError> {
-        let id = self.game.core().roster.add(team);
+        let id = self.game.core().roster().add(team);
         self.call("on_player_joined", (self.game.clone(), id as i64))
             .map(drop)?;
         Ok(id)
@@ -890,7 +968,7 @@ impl GameHost {
         pitch: f32,
     ) {
         let mut core = self.game.core();
-        let player = core.roster.get_mut(id).expect("no such player");
+        let player = core.roster().get_mut(id).expect("no such player");
         if player.alive {
             player.origin = origin;
             player.velocity = velocity;
@@ -904,7 +982,7 @@ impl GameHost {
     }
 
     pub fn movement_locked(&self) -> bool {
-        self.game.core().roster.movement_locked()
+        self.game.core().roster().movement_locked()
     }
 
     pub fn now_ms(&self) -> u64 {
@@ -916,7 +994,7 @@ impl GameHost {
     /// (slot order; `Map` keys sort). Equal hashes mean equal games; replay checkpoints
     /// compare it. `GameEvent`s are outputs, not state, and are not hashed.
     pub fn state_hash(&self) -> u64 {
-        let core = self.game.core();
+        let mut core = self.game.core();
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
         let mut feed = |bytes: &[u8]| {
             for byte in bytes {
@@ -925,10 +1003,10 @@ impl GameHost {
         };
         feed(&core.now.to_le_bytes());
         feed(&core.rng.state().to_le_bytes());
-        feed(&[u8::from(core.roster.movement_locked())]);
-        feed(&core.map.state_hash().to_le_bytes());
-        for slot in 0..core.roster.len() {
-            if let Some(player) = core.roster.get(slot) {
+        feed(&[u8::from(core.roster().movement_locked())]);
+        feed(&core.sim.state_hash().to_le_bytes());
+        for slot in 0..core.roster().len() {
+            if let Some(player) = core.roster().get(slot) {
                 feed(format!("{player:?}").as_bytes());
             }
         }
@@ -939,20 +1017,20 @@ impl GameHost {
     pub fn player(&self, id: usize) -> Player {
         self.game
             .core()
-            .roster
+            .roster()
             .get(id)
             .expect("no such player")
             .clone()
     }
 
     pub fn player_count(&self) -> usize {
-        self.game.core().roster.len()
+        self.game.core().roster().len()
     }
 
     /// Gametype-defined HUD values for one player as published at the end of the last
     /// tick (see the script's `hud` hook). Computed on demand before the first tick.
     pub fn hud(&mut self, id: usize) -> Result<BTreeMap<String, Value>, GameError> {
-        if let Some(values) = self.game.core().roster.hud(id) {
+        if let Some(values) = self.game.core().roster().hud(id) {
             return Ok(values.clone());
         }
         self.compute_hud(id)

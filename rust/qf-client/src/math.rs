@@ -38,6 +38,14 @@ pub fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
     m
 }
 
+/// Default horizontal field of view in degrees (Warsow's `fov` convention).
+pub const DEFAULT_FOV_X: f32 = 110.0;
+
+/// Vertical field of view in radians for a horizontal one in degrees at the given aspect ratio.
+pub fn fov_y_from_x(fov_x_degrees: f32, aspect: f32) -> f32 {
+    2.0 * ((fov_x_degrees.to_radians() * 0.5).tan() / aspect).atan()
+}
+
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -84,6 +92,18 @@ mod tests {
             close(p[0], 0.0) && close(p[1], 0.0) && close(p[2], -5.0),
             "{p:?}"
         );
+    }
+
+    #[test]
+    fn horizontal_fov_converts_to_vertical() {
+        // Square aspect keeps the angle; 90 degrees horizontal at 16:9 is about 58.7 vertical.
+        assert!(close(fov_y_from_x(90.0, 1.0), std::f32::consts::FRAC_PI_2));
+        let y = fov_y_from_x(90.0, 16.0 / 9.0).to_degrees();
+        assert!((y - 58.715).abs() < 0.01, "{y}");
+        // The horizontal half-angle is recovered from the vertical one.
+        let aspect = 16.0 / 9.0;
+        let x = 2.0 * ((fov_y_from_x(110.0, aspect) * 0.5).tan() * aspect).atan();
+        assert!((x.to_degrees() - 110.0).abs() < 1e-3);
     }
 
     #[test]

@@ -176,36 +176,7 @@ fn scan_map(g) {
         }
         let explosions = [];
         if e.target != () {
-            for o in entities {
-                if o.targetname == () || o.classname == () || o.targetname != e.target {
-                    continue;
-                }
-                let class = o.classname.to_lower();
-                let dmg = 0.0;
-                if o.dmg != () {
-                    dmg = to_num(o.dmg, 0.0);
-                }
-                let radius = 0.0;
-                if o.radius != () {
-                    radius = to_num(o.radius, 0.0);
-                }
-                if radius <= 0.0 {
-                    radius = dmg + 100.0;
-                }
-                let delay = 0.0;
-                if o.delay != () {
-                    delay = to_num(o.delay, 0.0);
-                }
-                if dmg < 1.0 {
-                    dmg = 1.0;
-                }
-                if class == "target_explosion" && o.origin != () {
-                    explosions.push(#{ origin: o.origin, radius: radius, damage: dmg, delay: ms(delay) });
-                } else if class == "func_explosive" && o.bounds != () {
-                    let center = vscale(vadd(o.bounds.mins, o.bounds.maxs), 0.5);
-                    explosions.push(#{ origin: center, radius: radius, damage: dmg, delay: ms(delay) });
-                }
-            }
+            explosions = g.explosives(e.target);
         }
         this.sites.push(#{ letter: letters[this.sites.len()], indicator: origin, triggers: triggers, explosions: explosions });
     }
