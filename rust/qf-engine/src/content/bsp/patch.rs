@@ -234,6 +234,9 @@ pub struct PatchGrid {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
+    pub lm_uvs: Vec<[f32; 2]>,
+    /// Vertex colours in 0..=255 floats.
+    pub colors: Vec<[f32; 4]>,
 }
 
 /// Tessellates a patch with `flat` subdivision exponents, dropping linear rows/columns.
@@ -241,6 +244,21 @@ pub fn tessellate(
     positions: &[[f32; 3]],
     normals: &[[f32; 3]],
     uvs: &[[f32; 2]],
+    cp: [usize; 2],
+    flat: [u32; 2],
+) -> PatchGrid {
+    let lm_uvs = vec![[0.0; 2]; positions.len()];
+    let colors = vec![[255.0; 4]; positions.len()];
+    tessellate_lit(positions, normals, uvs, &lm_uvs, &colors, cp, flat)
+}
+
+/// Like [`tessellate`], interpolating lightmap coordinates and vertex colours as well.
+pub fn tessellate_lit(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    uvs: &[[f32; 2]],
+    lm_uvs: &[[f32; 2]],
+    colors: &[[f32; 4]],
     cp: [usize; 2],
     flat: [u32; 2],
 ) -> PatchGrid {
@@ -257,6 +275,8 @@ pub fn tessellate(
         positions: select(&grid, size[0], &cols, &rows),
         normals: normals_grid,
         uvs: select(&evaluate(uvs, cp, step), size[0], &cols, &rows),
+        lm_uvs: select(&evaluate(lm_uvs, cp, step), size[0], &cols, &rows),
+        colors: select(&evaluate(colors, cp, step), size[0], &cols, &rows),
     }
 }
 
