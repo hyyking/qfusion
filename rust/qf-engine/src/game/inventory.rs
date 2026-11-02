@@ -30,7 +30,7 @@ pub enum WeaponState {
     SwitchingDown,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, bevy_ecs::component::Component)]
 pub struct Inventory {
     owned: [bool; WEAPON_COUNT],
     ammo: [u32; WEAPON_COUNT],
