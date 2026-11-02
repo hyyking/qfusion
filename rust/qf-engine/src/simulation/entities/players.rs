@@ -10,7 +10,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::game::Inventory;
-use crate::simulation::player::StepError;
+use crate::simulation::player::{PlayerCommand, StepError};
 use crate::simulation::pmove::{PmoveState, PmoveTouch, PredictedEvent, TouchContext};
 use crate::simulation::walk::{TickOutcome, WalkCommand, WalkPlayer};
 
@@ -31,6 +31,10 @@ pub(super) struct Cmd(pub WalkCommand);
 #[derive(Component, Clone, Debug)]
 pub(super) struct Walker(pub WalkPlayer);
 
+/// Free flight without collision or touches (spectators), instead of `pmove`.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Noclip(pub bool);
+
 /// What the last tick fed to and got back from `pmove`.
 #[derive(Component, Clone, Debug, Default)]
 pub(super) struct LastTick(pub Option<TickOutcome>);
@@ -49,6 +53,7 @@ pub(super) fn spawn(world: &mut World, slot: u8, player: WalkPlayer) {
                 Slot(slot),
                 Cmd::default(),
                 Walker(player),
+                Noclip::default(),
                 LastTick::default(),
                 Inventory::default(),
                 super::weapons::WeaponCmd::default(),
@@ -135,6 +140,32 @@ pub(super) fn movement(world: &mut World) {
             let command = world
                 .get::<Cmd>(entity)
                 .map_or_else(Default::default, |c| c.0);
+            if world.get::<Noclip>(entity).is_some_and(|n| n.0) {
+                let mut flier = walker.to_noclip();
+                let step = flier.step(PlayerCommand {
+                    forward: command.forward,
+                    right: command.right,
+                    up: command.up,
+                    view_angles: command.view_angles,
+                });
+                match step {
+                    Ok(()) => {
+                        walker.state.origin = flier.position;
+                        walker.state.velocity = [0.0; 3];
+                        walker.view_angles = flier.view_angles;
+                        walker.ground_entity = None;
+                        walker.touched.clear();
+                        world
+                            .entity_mut(entity)
+                            .insert((Walker(walker), LastTick(None)));
+                    }
+                    Err(error) => {
+                        world.entity_mut(entity).insert(Walker(walker));
+                        world.resource_mut::<Fault>().0.get_or_insert(error);
+                    }
+                }
+                continue;
+            }
             let solid = MoverWorld::new(collision, models, movers::poses(world));
             let result = {
                 let mut hook = TouchHook { world, models };
