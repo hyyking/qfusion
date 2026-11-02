@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use qf_engine::content::bsp::Bsp;
-use qf_engine::game::{BOMB_SCRIPT, GameError, GameHost, Team, Value};
+use qf_engine::game::{BOMB_SCRIPT, GameError, GameHost, Team, Value, WeaponEvent};
 use qf_engine::simulation::pmove::{PMFEAT_DASH, PMFEAT_JUMP, PMFEAT_WALLJUMP, PmoveStats};
-use qf_engine::simulation::walk::{ModeSimulation, MovementMode};
 
 use crate::hud::{Anchor, Canvas, HAnchor, Rect, Screen, VAnchor, text_size};
 use crate::loadout::Loadout;
+use crate::local_sim::LocalSim;
 use crate::menu::TeamChoice;
 
 const LOCKED_SPEED: i32 = 100;
@@ -45,14 +45,10 @@ impl BombSession {
 
     /// Runs `ticks` 125 Hz gametype ticks, teleporting the walking player on spawn events.
     /// Returns whether a spawn rewrote the player's look direction.
-    pub fn advance(
-        &mut self,
-        ticks: usize,
-        simulation: &mut ModeSimulation,
-    ) -> Result<bool, GameError> {
+    pub fn advance(&mut self, ticks: usize, simulation: &mut LocalSim) -> Result<bool, GameError> {
         let mut respawned = false;
         for _ in 0..ticks {
-            if let MovementMode::Walk(walk) = simulation.mode() {
+            if let Some(walk) = simulation.walk() {
                 let [pitch, yaw, _] = walk.view_angles;
                 self.host.set_player_motion(
                     self.player,
@@ -66,14 +62,15 @@ impl BombSession {
             for event in self.host.take_events() {
                 match event.kind.as_str() {
                     "spawn" if event.int("player") == Some(self.player as i64) => {
-                        if let (MovementMode::Walk(walk), Some(origin)) =
-                            (simulation.mode_mut(), event.vec3("origin"))
-                        {
-                            walk.state.origin = origin;
-                            walk.state.velocity = [0.0; 3];
+                        if let Some(origin) = event.vec3("origin") {
                             let yaw = event.float("yaw").unwrap_or(0.0) as f32;
-                            walk.view_angles = [0.0, yaw, 0.0];
-                            respawned = true;
+                            simulation.edit_walk(|walk| {
+                                walk.state.origin = origin;
+                                walk.state.velocity = [0.0; 3];
+                                walk.view_angles = [0.0, yaw, 0.0];
+                                respawned = true;
+                                true
+                            });
                         }
                     }
                     "explosion" => {
@@ -96,25 +93,39 @@ impl BombSession {
     }
 
     /// Applies the gametype's movement lock (round countdown, death) to the pmove stats.
-    pub fn apply_movement_lock(&mut self, simulation: &mut ModeSimulation) {
-        let MovementMode::Walk(walk) = simulation.mode_mut() else {
-            return;
-        };
+    pub fn apply_movement_lock(&mut self, simulation: &mut LocalSim) {
         let locked = self.host.movement_locked() || !self.hud.alive;
-        let stats = &mut walk.state.stats;
-        match (locked, self.unlocked_stats) {
-            (true, None) => {
-                self.unlocked_stats = Some(*stats);
-                stats.max_speed = LOCKED_SPEED;
-                stats.dash_speed = 0;
-                stats.features &= !(PMFEAT_JUMP | PMFEAT_DASH | PMFEAT_WALLJUMP);
+        let unlocked_stats = &mut self.unlocked_stats;
+        simulation.edit_walk(|walk| {
+            let stats = &mut walk.state.stats;
+            match (locked, *unlocked_stats) {
+                (true, None) => {
+                    *unlocked_stats = Some(*stats);
+                    stats.max_speed = LOCKED_SPEED;
+                    stats.dash_speed = 0;
+                    stats.features &= !(PMFEAT_JUMP | PMFEAT_DASH | PMFEAT_WALLJUMP);
+                    true
+                }
+                (false, Some(saved)) => {
+                    *stats = saved;
+                    *unlocked_stats = None;
+                    true
+                }
+                _ => false,
             }
-            (false, Some(saved)) => {
-                *stats = saved;
-                self.unlocked_stats = None;
-            }
-            _ => {}
+        });
+    }
+
+    /// Routes the weapon events' damage through the gametype's rules.
+    pub fn apply_weapon_events(&mut self, events: &[WeaponEvent]) {
+        if let Err(error) = self.host.apply_weapon_events(events) {
+            eprintln!("weapon damage: {error}");
         }
+    }
+
+    /// Whether the gametype lets the local player shoot (alive, not spectating).
+    pub fn can_shoot(&self) -> bool {
+        self.hud.alive && !self.spectating
     }
 
     pub fn command(&mut self, name: &str, args: &str) -> bool {
@@ -156,7 +167,7 @@ impl BombSession {
     }
 
     /// Joins `choice`. Spectating switches the player to noclip; joining a team returns to walking.
-    pub fn set_team(&mut self, choice: TeamChoice, simulation: &mut ModeSimulation) {
+    pub fn set_team(&mut self, choice: TeamChoice, simulation: &mut LocalSim) {
         if choice == self.team_choice() {
             return;
         }
@@ -165,16 +176,12 @@ impl BombSession {
             TeamChoice::Beta => Team::Beta,
             TeamChoice::Spectator => {
                 self.spectating = true;
-                if simulation.mode().is_walking() {
-                    simulation.toggle_mode();
-                }
+                simulation.set_noclip(true);
                 return;
             }
         };
         self.spectating = false;
-        if !simulation.mode().is_walking() {
-            simulation.toggle_mode();
-        }
+        simulation.set_noclip(false);
         if let Err(error) = self.host.change_team(self.player, team) {
             eprintln!("team change: {error}");
         }
