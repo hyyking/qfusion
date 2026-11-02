@@ -14,8 +14,10 @@ mod loadout;
 mod math;
 mod menu;
 mod model_render;
+mod pickup_view;
 mod render;
 mod weapon_hud;
+mod weapon_input;
 mod world;
 
 use std::collections::HashSet;
@@ -33,7 +35,9 @@ use qf_engine::simulation::player::NoclipPlayer;
 use qf_engine::simulation::recording::{MapIdentity, Recorder};
 use qf_engine::simulation::walk::{ModeSimulation, MovementMode, WalkCommand};
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{
+    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
@@ -53,6 +57,7 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<render::Renderer>,
     audio: Option<game_sound::GameSound>,
+    pickups: pickup_view::PickupView,
     game_dirs: Vec<PathBuf>,
     map_pk3: Option<PathBuf>,
     world_mesh: Option<WorldMesh>,
@@ -71,6 +76,10 @@ struct App {
     /// Fed once the client runs on Sim (no inventory before that).
     weapon_hud: weapon_hud::WeaponHud,
     crosshair: crosshair::Crosshair,
+    /// Collected from the keyboard and mouse; handed to `Sim::push_weapon_input` once the
+    /// client runs on Sim.
+    #[allow(dead_code)]
+    weapon_input: weapon_input::WeaponInput,
     recorder: Option<Recorder>,
     record_path: Option<PathBuf>,
     map: MapIdentity,
@@ -156,6 +165,7 @@ impl App {
             window: None,
             renderer: None,
             audio: None,
+            pickups: pickup_view::PickupView::new(&bsp.parsed_entities),
             game_dirs,
             map_pk3,
             world_mesh: Some(world_mesh),
@@ -170,6 +180,7 @@ impl App {
             hud_record,
             weapon_hud,
             crosshair,
+            weapon_input: weapon_input::WeaponInput::default(),
             recorder: None,
             record_path: None,
             map,
@@ -291,6 +302,8 @@ impl App {
             let _ = window.set_cursor_grab(CursorGrabMode::None);
             window.set_cursor_visible(true);
             self.mouse_grabbed = false;
+            // Released input never fires: menus and lost focus drop held fire.
+            self.weapon_input.clear();
         }
         self.mouse_delta = [0.0; 2];
     }
@@ -605,6 +618,7 @@ impl ApplicationHandler for App {
                                 self.start_recording(None);
                             }
                         }
+                        Key::Character(ref typed) if self.weapon_input.select_key(typed) => {}
                         Key::Character(ref typed) => match self.keybinds.action_for(typed) {
                             Some(keybinds::Action::SoundTest) => self.play_sound(),
                             Some(keybinds::Action::DropBomb) => {
@@ -686,6 +700,21 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } if !self.mouse_grabbed => self.set_mouse_grab(true),
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => self.weapon_input.set_fire(
+                state == ElementState::Pressed && self.mouse_grabbed && !self.ui_active(),
+            ),
+            WindowEvent::MouseWheel { delta, .. } if self.mouse_grabbed && !self.ui_active() => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 40.0,
+                };
+                // Wheel up selects the previous weapon, like the legacy client.
+                self.weapon_input.cycle(-(lines.round() as i32));
+            }
             WindowEvent::Focused(false) => {
                 self.pressed_keys.clear();
                 self.right_mouse_down = false;
@@ -792,14 +821,25 @@ impl ApplicationHandler for App {
                     println!("trigger: {event:?}");
                 }
                 if let Some(audio) = &mut self.audio {
+                    let mover_poses = self
+                        .simulation
+                        .entities()
+                        .map(|e| e.mover_poses())
+                        .unwrap_or_default();
                     audio.update(
                         eye,
                         self.view_angles[1],
                         &mut self.simulation,
                         &trigger_events,
+                        &mover_poses,
+                        elapsed.as_secs_f32(),
                     );
                 }
+                let pickup_changes = self.pickups.update(eye, elapsed);
                 if let Some(r) = &mut self.renderer {
+                    for (entity, visible) in pickup_changes {
+                        r.set_entity_visible(entity, visible);
+                    }
                     let [width, height] = r.size();
                     let scale = self
                         .window

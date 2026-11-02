@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use qf_audio::{AudioDevice, AudioSystem};
 use qf_engine::content::bsp::Bsp;
 use qf_engine::content::vfs::Vfs;
-use qf_engine::simulation::entities::TriggerEvent;
+use qf_engine::simulation::entities::{MoverPose, TriggerEvent};
 use qf_engine::simulation::walk::ModeSimulation;
 use qf_engine::sound::{
-    ATTN_NORM, SOUND_TELEPORT_IN, SOUND_TELEPORT_OUT, SoundChannel, SoundEvent, SoundName,
-    SoundPosition, SpeakerSet, sound_for_pmove_event, sounds_for_trigger_event,
+    ATTN_NORM, MoverSounds, SOUND_TELEPORT_IN, SOUND_TELEPORT_OUT, SoundChannel, SoundEvent,
+    SoundName, SoundPosition, SpeakerSet, sound_for_pmove_event, sounds_for_trigger_event,
 };
 
 const EXPLOSION_SOUND: &str = "sounds/weapons/rocket_strong_explosion";
@@ -54,6 +54,7 @@ pub struct GameSound {
     _device: AudioDevice,
     system: AudioSystem<Vfs>,
     speakers: SpeakerSet,
+    movers: MoverSounds,
     last_eye: Option<[f32; 3]>,
 }
 
@@ -77,10 +78,21 @@ impl GameSound {
         for event in speakers.initial_events() {
             system.handle_event(&event);
         }
+        let bounds: Vec<_> = bsp.models.iter().map(|m| (m.mins, m.maxs)).collect();
+        let movers = MoverSounds::from_entities(&bsp.parsed_entities, &bounds);
+        for mover in movers.sounds() {
+            system.preload(
+                [&mover.start, &mover.stop, &mover.moving]
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str),
+            );
+        }
         let mut sound = Self {
             _device: device,
             system,
             speakers,
+            movers,
             last_eye: None,
         };
         sound.print_reports();
@@ -94,7 +106,12 @@ impl GameSound {
         yaw: f32,
         simulation: &mut ModeSimulation,
         triggers: &[TriggerEvent],
+        movers: &[MoverPose],
+        dt: f32,
     ) {
+        for event in self.movers.update(movers, dt) {
+            self.system.handle_event(&event);
+        }
         let from = self.last_eye.replace(eye).unwrap_or(eye);
         self.system.set_listener(eye, yaw);
         for event in simulation.take_events() {

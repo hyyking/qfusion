@@ -190,7 +190,7 @@ fn parses_synthetic_map() {
     assert_eq!(mesh.bounds().unwrap(), ([0.0, 0.0, 0.0], [8.0, 8.0, 0.0]));
     assert!(mesh.to_obj().contains("f 1 2 3"));
     let d = bsp.diagnostics.join("\n");
-    assert!(d.contains("patch faces") && d.contains("lightgrid"));
+    assert!(d.contains("patch faces") && !d.contains("lightgrid"));
 }
 
 #[test]

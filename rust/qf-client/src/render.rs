@@ -213,7 +213,7 @@ impl Renderer {
             &queue,
             world_format,
             content,
-            props_from_entities(&bsp.parsed_entities),
+            props_from_entities(&bsp.parsed_entities, &bsp.lightgrid),
         );
         let depth_view = create_depth_view(&device, config.width, config.height);
         let hud = HudPass::new(&device, config.format);
@@ -240,6 +240,11 @@ impl Renderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_view(&self.device, width, height);
+    }
+
+    /// Hides or shows the model of a map entity (a taken or respawned pickup).
+    pub fn set_entity_visible(&mut self, entity: usize, visible: bool) {
+        self.models.set_entity_visible(entity, visible);
     }
 
     pub fn size(&self) -> [f32; 2] {

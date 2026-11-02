@@ -50,6 +50,14 @@ The bomb gametype emits an `explosion` event (`origin`, `radius`) for each blast
 (`GameSound::play_explosions`) plays `sounds/weapons/rocket_strong_explosion` there with `ATTN_NORM`, as legacy
 `EV_EXPLOSION2` does. The freeplay client has no projectile simulation, so only bomb-site blasts produce it.
 
+## Mover sounds
+`MoverSounds` (qf-engine `sound.rs`) covers `func_door`, `func_door_rotating` and `func_plat`. The client derives
+start/stop from per-frame `MoverPose` changes (idle for 0.1 s means stopped), so the simulation is untouched. Defaults
+follow `G_AssignMoverSounds`: doors play `sounds/movers/door_start` / `door_stop`, plats loop
+`sounds/movers/elevator_move`; the `noise_start`, `noise_stop` and `noise` keys override them (`silent` disables,
+`default` keeps the default). Sounds are positioned at the brush model center with `ATTN_STATIC`. Known content gap:
+`func_button` plays `sounds/movers/button`, which is absent from the stock packs, so buttons stay silent.
+
 ## Tests
 Unit tests cover decode, attenuation/panning, mixer math and the system. `rust/qf-audio/tests/offline_render.rs`
 renders events through the mixer headlessly against real Warsow content (skipped if the install is absent; set
