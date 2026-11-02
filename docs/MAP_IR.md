@@ -117,6 +117,34 @@ loader --> MapIr --+--> CollisionAdapter  --> impl CollisionWorld  (sim: pmove, 
 - Collision content flags are the only render-relevant data in collision. Render-relevant flags (sky, nodraw) live in `materials`, resolved once.
 - Entities reference submodels by id; submodel resolves to collision (brushes/patches) and render (surfaces) ranges. Movers therefore use the same id for physics and mesh.
 
+## 5b. Downstream consumers
+
+Downstream systems never read `MapIr` directly; each consumes one adapter output.
+
+```mermaid
+flowchart LR
+  IR[MapIr] --> CA[CollisionAdapter<br/>CollisionWorld]
+  IR --> EA[EntityAdapter<br/>MapEntity list + submodels]
+  IR --> RA[RenderAdapter]
+  CA --> PM[pmove: trace, point_contents]
+  CA --> MV[MoverWorld: trace_model]
+  CA --> TR[triggers: box_touches_model]
+  EA --> SP[MapEntities::spawn + gametype filter]
+  SP --> ECS[(bevy_ecs world)]
+  ECS --> IT[items, pickups, inventory]
+  ECS --> CB[combat, bomb mode]
+  ECS --> TR
+  ECS --> MV
+  EA --> AU[SpeakerSet / audio]
+  RA --> CLI[qf-client render]
+  ECS -. mover poses .-> CLI
+```
+
+- **Collision**: `pmove` uses the world trace and `point_contents`; movers wrap it in `MoverWorld` and call `trace_model(SubmodelId, pose, ...)`; triggers use `box_touches_model(SubmodelId, ...)`. Hits report shared contents/surface flags and a `MaterialId`.
+- **Entities/ECS**: `EntityAdapter` supplies ordered key/values and an optional `SubmodelId` (replacing `"*N"` parsing in `spawn.rs`). `MapEntities::spawn` applies the gametype filter and builds ECS components; item/weapon/pickup entities (`item_*`, `weapon_*`) and spawn points are ordinary entities. Inventory and combat (not yet in the Rust port) are ECS systems that reach the map only via collision traces and trigger touches. Item models/sounds are `AssetRef`s resolved through the VFS.
+- **Render/audio**: the client draws the static world from `RenderAdapter` output and mover submodels at poses read from the ECS; `SpeakerSet` takes the entity list.
+- The sim sees only a frozen collision world and entity list, so game logic cannot tell which format a map came from. Entity changes re-run spawn against a new IR revision at a map/revision boundary.
+
 ## 6. Contents and surface flags
 
 The IR defines its own `ContentFlags` and `SurfaceFlags` (bitflags, `u32`), with a documented stable numeric layout that **equals today's FBSP values** for the bits the engine uses (`CONTENTS_SOLID=1`, `LAVA=8`, `SLIME=16`, `WATER=32`, `PLAYERCLIP=0x10000`, `BODY=0x2000000`; `SURF_NODAMAGE=1`, `SLICK=2`, `SKY=4`, `LADDER=8`, `NOWALLJUMP=0x80000`, `NONSOLID=0x4000`). Consequences:
