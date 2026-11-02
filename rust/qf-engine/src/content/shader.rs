@@ -155,6 +155,8 @@ pub struct Stage {
     pub tc_mods: Vec<TcMod>,
     pub depth_write: bool,
     pub depth_equal: bool,
+    /// Warsow `material` stage: the diffuse image lit by the lightmap.
+    pub material: bool,
 }
 
 impl Stage {
@@ -170,6 +172,7 @@ impl Stage {
             tc_mods: Vec::new(),
             depth_write: true,
             depth_equal: false,
+            material: false,
         }
     }
 }
@@ -584,6 +587,13 @@ fn parse_stage(cur: &mut Cursor, warnings: &mut Vec<String>, shader: &str) -> St
                         Some(m) => stage.tc_mods.push(m),
                         None => bad("tcmod"),
                     },
+                    "material" => match args.first() {
+                        Some(image) => {
+                            stage.map = MapSource::Image(image.to_string());
+                            stage.material = true;
+                        }
+                        None => bad("material"),
+                    },
                     "depthwrite" => explicit_depth_write = true,
                     "depthfunc" => {
                         stage.depth_equal = args
@@ -620,7 +630,21 @@ fn parse_shader_body(cur: &mut Cursor, name: &str, warnings: &mut Vec<String>) -
             Some(Tok::Open) => {
                 cur.pos += 1;
                 let stage = parse_stage(cur, warnings, name);
-                shader.stages.push(stage);
+                if stage.material {
+                    // Same layering as the implicit shader: lightmap, then diffuse filter.
+                    let mut lit = Stage::new(MapSource::Lightmap);
+                    lit.tc_gen = TcGen::Lightmap;
+                    shader.stages.push(lit);
+                    let mut diffuse = stage;
+                    diffuse.blend = Some(Blend {
+                        src: BlendFactor::DstColor,
+                        dst: BlendFactor::Zero,
+                    });
+                    diffuse.depth_write = false;
+                    shader.stages.push(diffuse);
+                } else {
+                    shader.stages.push(stage);
+                }
             }
             Some(Tok::Newline) => unreachable!(),
             Some(Tok::Word(key)) => {
@@ -870,6 +894,23 @@ textures/a/after { { map after.tga } }
             s.tc_mods,
             vec![TcMod::Scroll(0.5, -0.25), TcMod::Rotate(30.0)]
         );
+    }
+
+    #[test]
+    fn material_stage_expands_to_lightmap_plus_diffuse() {
+        let mut lib = ShaderLib::new();
+        lib.parse_script(
+            "textures/m/stucco\n{\n{\nmaterial textures/m/stucco.tga textures/m/stucco_norm.tga\n}\n}\n",
+            "test",
+        );
+        let s = lib.get("textures/m/stucco").unwrap();
+        assert_eq!(s.stages.len(), 2);
+        assert_eq!(s.stages[0].map, MapSource::Lightmap);
+        assert_eq!(
+            s.stages[1].map,
+            MapSource::Image("textures/m/stucco.tga".into())
+        );
+        assert!(s.stages[1].blend.is_some() && !s.stages[1].depth_write);
     }
 
     #[test]

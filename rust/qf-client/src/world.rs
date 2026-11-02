@@ -505,6 +505,10 @@ impl Builder<'_> {
             let Some(shader) = self.shader_for_ref(r) else {
                 continue;
             };
+            if std::env::var_os("QF_DEBUG_SHADERS").is_some() {
+                let name = self.bsp.shaders.get(r as usize).map_or("?", |s| &s.name);
+                eprintln!("batch {name}: {} triangles", tris.len() / 3);
+            }
             batches.push(Batch {
                 shader,
                 first: indices.len() as u32,
@@ -833,12 +837,37 @@ impl WorldRenderer {
 }
 
 fn lightmap_view(
-    _device: &wgpu::Device,
-    _queue: &wgpu::Queue,
-    _bsp: &Bsp,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    bsp: &Bsp,
     white: &wgpu::TextureView,
 ) -> wgpu::TextureView {
-    white.clone()
+    let atlas = &bsp.lightmaps;
+    if atlas.rgba.is_empty() || atlas.width == 0 || atlas.height == 0 {
+        eprintln!("lightmap: map has no usable lightmaps; surfaces use vertex colours");
+        return white.clone();
+    }
+    device
+        .create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("lightmap atlas"),
+                size: wgpu::Extent3d {
+                    width: atlas.width,
+                    height: atlas.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &atlas.rgba,
+        )
+        .create_view(&Default::default())
 }
 
 #[cfg(test)]
