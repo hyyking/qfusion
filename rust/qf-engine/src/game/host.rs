@@ -312,6 +312,39 @@ fn register_api(engine: &mut Engine) {
         },
     );
     engine.register_fn(
+        "radius_damage",
+        |g: &mut Game,
+         origin: rhai::Array,
+         radius: f64,
+         damage: f64,
+         falloff: bool|
+         -> ScriptResult<rhai::Array> {
+            let origin = to_vec3(&origin)?;
+            let core = g.core();
+            let mut hits = rhai::Array::new();
+            for slot in 0..core.roster.len() {
+                let Some(player) = core.roster.get(slot).filter(|p| p.alive) else {
+                    continue;
+                };
+                let target = add(player.origin, [0.0, 0.0, 8.0]);
+                let dist = f64::from(distance(origin, target));
+                if dist > radius || core.trace(origin, [0.0; 3], [0.0; 3], target).fraction < 1.0 {
+                    continue;
+                }
+                let amount = if falloff {
+                    (damage * (1.0 - dist / radius)).max(1.0)
+                } else {
+                    damage
+                };
+                let mut hit = Map::new();
+                hit.insert("victim".into(), Dynamic::from(slot as i64));
+                hit.insert("amount".into(), Dynamic::from_float(amount));
+                hits.push(Dynamic::from(hit));
+            }
+            Ok(hits)
+        },
+    );
+    engine.register_fn(
         "los",
         |g: &mut Game, from: rhai::Array, to: rhai::Array| -> ScriptResult<bool> {
             let trace = g
