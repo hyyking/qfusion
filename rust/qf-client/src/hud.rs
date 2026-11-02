@@ -264,6 +264,84 @@ impl HudElement for UpsCounter {
     }
 }
 
+/// Frames-per-second counter in the top-right corner. The shown value is the average over
+/// [`FpsCounter::WINDOW_SECONDS`] so it stays readable, drawn like [`UpsCounter`].
+pub struct FpsCounter {
+    anchor: Anchor,
+    shown: u32,
+    frames: u32,
+    elapsed: f32,
+    text: String,
+}
+
+impl FpsCounter {
+    pub const WINDOW_SECONDS: f32 = 0.5;
+    const PIXEL: f32 = 3.0;
+
+    pub fn new() -> Self {
+        Self {
+            anchor: Anchor {
+                horizontal: HAnchor::Right,
+                vertical: VAnchor::Top,
+                margin: [16.0, 16.0],
+            },
+            shown: 0,
+            frames: 0,
+            elapsed: 0.0,
+            text: String::from("0"),
+        }
+    }
+
+    pub fn shown(&self) -> u32 {
+        self.shown
+    }
+}
+
+impl Default for FpsCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HudElement for FpsCounter {
+    fn update(&mut self, state: &HudState) {
+        if state.frame_seconds <= 0.0 || state.frame_seconds.is_nan() {
+            return;
+        }
+        self.frames += 1;
+        self.elapsed += state.frame_seconds;
+        if self.elapsed < Self::WINDOW_SECONDS {
+            return;
+        }
+        self.shown = (self.frames as f32 / self.elapsed).round() as u32;
+        self.frames = 0;
+        self.elapsed = 0.0;
+        self.text.clear();
+        let _ = write!(self.text, "{}", self.shown);
+    }
+
+    fn draw(&self, screen: &Screen, canvas: &mut Canvas) {
+        let pixel = Self::PIXEL * screen.scale;
+        let number = text_size(self.text.chars().count(), pixel);
+        let label = text_size(3, pixel * 0.5);
+        let gap = pixel;
+        let size = [number[0].max(label[0]), number[1] + gap + label[1]];
+        let [x, y] = self.anchor.place(screen, size);
+        canvas.shadowed_text(
+            &self.text,
+            [x + (size[0] - number[0]) * 0.5, y],
+            pixel,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        canvas.shadowed_text(
+            "FPS",
+            [x + (size[0] - label[0]) * 0.5, y + number[1] + gap],
+            pixel * 0.5,
+            [0.8, 0.8, 0.8, 1.0],
+        );
+    }
+}
+
 /// What the recording indicator currently shows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordStatus {
@@ -394,6 +472,65 @@ mod tests {
         };
         let a = anchor(HAnchor::Left, VAnchor::Top, [10.0, 5.0]);
         assert_eq!(a.place(&screen, [1.0, 1.0]), [20.0, 10.0]);
+    }
+
+    fn frame(seconds: f32) -> HudState {
+        HudState {
+            frame_seconds: seconds,
+            ..HudState::default()
+        }
+    }
+
+    #[test]
+    fn fps_averages_over_window_and_rounds() {
+        let mut fps = FpsCounter::new();
+        // 60 Hz frames: 0.5 s window is not complete until 30 frames have passed.
+        for _ in 0..29 {
+            fps.update(&frame(1.0 / 60.0));
+        }
+        assert_eq!(fps.shown(), 0, "not refreshed before the window ends");
+        fps.update(&frame(1.0 / 60.0));
+        assert_eq!(fps.shown(), 60);
+        // Uneven frame times average to 4 frames in 0.5 s = 8 fps.
+        for s in [0.1, 0.2, 0.1, 0.1] {
+            fps.update(&frame(s));
+        }
+        assert_eq!(fps.shown(), 8);
+        // Zero or negative frame times are ignored.
+        fps.update(&frame(0.0));
+        fps.update(&frame(-1.0));
+        assert_eq!(fps.shown(), 8);
+    }
+
+    #[test]
+    fn fps_draws_top_right_without_overlapping_record_indicator() {
+        let mut fps = FpsCounter::new();
+        fps.update(&frame(1.0));
+        let mut rec = RecordIndicator::new();
+        rec.set_recording(12345);
+        for screen in [
+            SCREEN,
+            Screen {
+                width: 1920.0,
+                height: 1080.0,
+                scale: 2.0,
+            },
+        ] {
+            let (mut a, mut b) = (Canvas::default(), Canvas::default());
+            fps.draw(&screen, &mut a);
+            rec.draw(&screen, &mut b);
+            let max_x = a.rects.iter().map(|r| r.x + r.w).fold(0.0, f32::max);
+            let min_x = a.rects.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+            let min_y = a.rects.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+            assert!(max_x <= screen.width, "inside the screen");
+            assert!(
+                max_x > screen.width - 24.0 * screen.scale,
+                "hugs the right edge"
+            );
+            assert!(min_y >= 0.0 && min_y < 24.0 * screen.scale, "at the top");
+            let rec_max_x = b.rects.iter().map(|r| r.x + r.w).fold(0.0, f32::max);
+            assert!(rec_max_x < min_x, "clear of the top-left indicator");
+        }
     }
 
     #[test]

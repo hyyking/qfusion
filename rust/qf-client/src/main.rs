@@ -57,6 +57,7 @@ struct App {
     pressed_keys: HashSet<KeyCode>,
     right_mouse_down: bool,
     hud_ups: hud::UpsCounter,
+    hud_fps: hud::FpsCounter,
     hud_record: hud::RecordIndicator,
     recorder: Option<Recorder>,
     record_path: Option<PathBuf>,
@@ -115,6 +116,7 @@ impl App {
             pressed_keys: HashSet::new(),
             right_mouse_down: false,
             hud_ups: hud::UpsCounter::new(),
+            hud_fps: hud::FpsCounter::new(),
             hud_record: hud::RecordIndicator::new(),
             recorder: None,
             record_path: None,
@@ -514,7 +516,12 @@ impl ApplicationHandler for App {
                         velocity: [0.0; 3],
                         frame_seconds: elapsed.as_secs_f32(),
                     });
+                    self.hud_fps.update(&hud::HudState {
+                        velocity: [0.0; 3],
+                        frame_seconds: elapsed.as_secs_f32(),
+                    });
                     self.hud_ups.draw(&screen, &mut self.hud_canvas);
+                    self.hud_fps.draw(&screen, &mut self.hud_canvas);
                     self.hud_record.draw(&screen, &mut self.hud_canvas);
                     if let Some(bomb) = &self.bomb {
                         bomb.hud.draw(&screen, &mut self.hud_canvas);
