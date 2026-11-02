@@ -50,6 +50,7 @@ mod logic;
 mod mover_tests;
 mod movers;
 mod parse;
+mod schedule;
 mod spawn;
 #[cfg(test)]
 mod tests;
@@ -500,7 +501,8 @@ impl MapEntities {
     pub fn think(&mut self, time_ms: i64) {
         self.world.resource_mut::<Level>().set_time(time_ms);
         self.world.resource_mut::<components::Player>().0 = None;
-        logic::run_thinks(&mut self.world);
+        self.world.resource_mut::<schedule::Run>().thinks = true;
+        schedule::run(&mut self.world, None, None);
     }
 
     /// Fires lump entity `entity` as if another entity had targeted it.
@@ -539,7 +541,19 @@ impl MapEntities {
         player: Option<PushedPlayer<'_>>,
     ) {
         self.world.resource_mut::<components::Player>().0 = None;
-        movers::step(&mut self.world, models, world, time_ms, player);
+        self.world.resource_mut::<Level>().set_time(time_ms);
+        self.world.resource_mut::<schedule::Run>().movers = true;
+        let input = player.as_ref().map(|p| (*p.state, p.ground_entity));
+        self.world.resource_mut::<schedule::MoverFrame>().player = input;
+        schedule::run(&mut self.world, Some(models), Some(world));
+        let output = self
+            .world
+            .resource_mut::<schedule::MoverFrame>()
+            .player
+            .take();
+        if let (Some(player), Some((state, _))) = (player, output) {
+            *player.state = state;
+        }
     }
 
     /// Entities the player touched during a movement command (`touch_entities`
@@ -560,7 +574,7 @@ impl MapEntities {
     }
 
     /// Binds the entities to a world and a level time for one movement tick.
-    pub fn player_touch<'a, M: BrushModels + ?Sized>(
+    pub fn player_touch<'a, M: BrushModels>(
         &'a mut self,
         models: &'a M,
         time_ms: i64,
@@ -574,24 +588,36 @@ impl MapEntities {
 
     fn touch(
         &mut self,
-        models: &(impl BrushModels + ?Sized),
+        models: &dyn BrushModels,
         time_ms: i64,
         state: &mut PmoveState,
         context: &TouchContext,
         predicted: &mut Vec<PredictedEvent>,
     ) {
-        logic::touch(&mut self.world, models, time_ms, state, context, predicted);
+        self.world.resource_mut::<Level>().set_time(time_ms);
+        self.world.resource_mut::<components::Player>().0 = Some(components::PlayerPresence {
+            state: *state,
+            context: *context,
+        });
+        self.world.resource_mut::<schedule::TouchFrame>().swept =
+            logic::swept_bounds(state, context.previous_origin);
+        self.world.resource_mut::<schedule::Run>().touch = true;
+        schedule::run(&mut self.world, Some(models), None);
+        if let Some(player) = schedule::take_player(&mut self.world) {
+            *state = player.state;
+        }
+        schedule::take_predicted(&mut self.world, predicted);
     }
 }
 
 /// [`PmoveTouch`] adapter for one movement tick.
-pub struct PlayerTouch<'a, M: BrushModels + ?Sized> {
+pub struct PlayerTouch<'a, M: BrushModels> {
     entities: &'a mut MapEntities,
     models: &'a M,
     time_ms: i64,
 }
 
-impl<M: BrushModels + ?Sized> PmoveTouch for PlayerTouch<'_, M> {
+impl<M: BrushModels> PmoveTouch for PlayerTouch<'_, M> {
     fn touch_triggers(
         &mut self,
         state: &mut PmoveState,
