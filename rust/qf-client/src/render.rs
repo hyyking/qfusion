@@ -309,7 +309,7 @@ pub fn view_projection(eye: [f32; 3], view_angles: [f32; 3], aspect: f32) -> [[f
         eye[2] + forward[2],
     ];
     let view = math::look_at(eye, target, [0.0, 0.0, 1.0]);
-    let proj = math::perspective(fov_y, aspect, 0.1, 16_384.0);
+    let proj = math::perspective(fov_y, aspect, 1.0, 16_384.0);
     math::mul(&proj, &view)
 }
 
@@ -337,7 +337,7 @@ pub fn begin_world_pass<'e>(
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
             view: depth,
             depth_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Clear(1.0),
+                load: wgpu::LoadOp::Clear(0.0),
                 store: wgpu::StoreOp::Discard,
             }),
             stencil_ops: None,

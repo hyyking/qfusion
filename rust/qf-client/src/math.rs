@@ -25,15 +25,16 @@ pub fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> Mat4 {
     ]
 }
 
-/// Right-handed perspective with wgpu clip-space depth range 0..1.
+/// Right-handed reversed-Z perspective: the near plane maps to depth 1 and the far plane to 0,
+/// which spreads float depth precision evenly over distance.
 pub fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
     let f = 1.0 / (fov_y * 0.5).tan();
     let mut m = [[0.0; 4]; 4];
     m[0][0] = f / aspect;
     m[1][1] = f;
-    m[2][2] = far / (near - far);
+    m[2][2] = near / (far - near);
     m[2][3] = -1.0;
-    m[3][2] = near * far / (near - far);
+    m[3][2] = near * far / (far - near);
     m
 }
 
@@ -92,7 +93,7 @@ mod tests {
             let p = transform_point(&m, [0.0, 0.0, z]);
             p[2] / p[3]
         };
-        assert!(close(depth(-0.1), 0.0));
-        assert!(close(depth(-100.0), 1.0));
+        assert!(close(depth(-0.1), 1.0));
+        assert!(close(depth(-100.0), 0.0));
     }
 }
