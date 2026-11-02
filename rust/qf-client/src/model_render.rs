@@ -22,6 +22,8 @@ const BOB_HZ: f32 = 0.5;
 #[derive(Clone, Debug)]
 pub struct Prop {
     pub model: String,
+    /// Position of the entity in the map's entity lump (usize::MAX when not from a lump).
+    pub entity: usize,
     pub origin: [f32; 3],
     pub yaw_degrees: f32,
     /// Items spin and bob; flags and indicators stand still.
@@ -35,6 +37,7 @@ impl Prop {
         let animated = ['w', 'a', 'i'].iter().any(|&p| lower.starts_with(p));
         Some(Self {
             model,
+            entity: usize::MAX,
             origin,
             yaw_degrees,
             animated,
@@ -45,13 +48,16 @@ impl Prop {
 /// Props for every entity of a map lump that has a world model.
 pub fn props_from_entities(lump: &[Entity]) -> Vec<Prop> {
     lump.iter()
-        .filter_map(|e| {
+        .enumerate()
+        .filter_map(|(entity, e)| {
             let origin = parse_floats::<3>(e.get("origin")?)?;
             let yaw = e
                 .get("angle")
                 .and_then(|a| a.trim().parse::<f32>().ok())
                 .unwrap_or(0.0);
-            Prop::for_classname(e.get("classname")?, origin, yaw)
+            let mut prop = Prop::for_classname(e.get("classname")?, origin, yaw)?;
+            prop.entity = entity;
+            Some(prop)
         })
         .collect()
 }
@@ -305,11 +311,12 @@ impl ModelRenderer {
         }
     }
 
-    /// Hides or shows a prop (e.g. a taken pickup).
-    #[allow(dead_code)]
-    pub fn set_visible(&mut self, prop: usize, visible: bool) {
-        if let Some(v) = self.visible.get_mut(prop) {
-            *v = visible;
+    /// Hides or shows the prop of a map entity (e.g. a taken pickup).
+    pub fn set_entity_visible(&mut self, entity: usize, visible: bool) {
+        for (i, (_, prop)) in self.props.iter().enumerate() {
+            if prop.entity == entity {
+                self.visible[i] = visible;
+            }
         }
     }
 
