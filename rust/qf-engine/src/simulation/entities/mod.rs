@@ -435,6 +435,11 @@ impl MapEntities {
         hash::state_hash(&self.world)
     }
 
+    /// The shared ECS world, for the gametype roster that lives beside the map entities.
+    pub(crate) fn world_mut(&mut self) -> &mut World {
+        &mut self.world
+    }
+
     /// Entities with a supported classname that could not be created.
     pub fn warnings(&self) -> &[SpawnWarning] {
         &self.warnings
