@@ -9,6 +9,7 @@
 
 use bevy_ecs::prelude::*;
 
+use crate::game::Inventory;
 use crate::simulation::player::StepError;
 use crate::simulation::pmove::{PmoveState, PmoveTouch, PredictedEvent, TouchContext};
 use crate::simulation::walk::{TickOutcome, WalkCommand, WalkPlayer};
@@ -49,6 +50,9 @@ pub(super) fn spawn(world: &mut World, slot: u8, player: WalkPlayer) {
                 Cmd::default(),
                 Walker(player),
                 LastTick::default(),
+                Inventory::default(),
+                super::weapons::WeaponCmd::default(),
+                super::weapons::Alive(true),
             ));
         }
     }

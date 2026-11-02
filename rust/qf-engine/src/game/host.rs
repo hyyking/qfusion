@@ -18,6 +18,7 @@ use crate::simulation::bsp_world::BspWorld;
 use crate::simulation::pmove::{PmTrace, PmoveWorld, Vec3};
 
 use super::combat::{Player, Team};
+use super::firing::WeaponEvent;
 use super::roster::Roster;
 use super::vec::{Bounds, Rng, add, distance, dot, length, scale, sub};
 use super::weapons::WeaponId;
@@ -605,6 +606,23 @@ impl GameHost {
             ),
         )
         .map(drop)
+    }
+
+    /// Routes the damage of the simulation's weapon events through the script's
+    /// `on_damage` rule; other event kinds are for rendering and audio.
+    pub fn apply_weapon_events(&mut self, events: &[WeaponEvent]) -> Result<(), GameError> {
+        for event in events {
+            if let WeaponEvent::Damage {
+                victim,
+                attacker,
+                amount,
+                ..
+            } = event
+            {
+                self.damage(*victim, Some(*attacker), *amount)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn set_player_motion(

@@ -72,6 +72,10 @@ pub(super) fn state_hash(world: &World) -> u64 {
         hash.text(&slot);
         component::<super::players::Cmd>(&mut hash, world, entity);
         component::<super::players::Walker>(&mut hash, world, entity);
+        component::<crate::game::Inventory>(&mut hash, world, entity);
+        component::<super::weapons::WeaponCmd>(&mut hash, world, entity);
+        component::<super::weapons::Alive>(&mut hash, world, entity);
     }
+    hash.text(&super::weapons::shots(world));
     hash.0
 }

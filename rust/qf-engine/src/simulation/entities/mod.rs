@@ -42,6 +42,7 @@ use super::player::StepError;
 use super::pmove::{PMF_ON_GROUND, PMF_TIME_TELEPORT, PmEvent, PmType};
 use super::pmove::{PmoveState, PmoveTouch, PmoveWorld, PredictedEvent, TouchContext, Vec3};
 use super::walk::{TickOutcome, WalkCommand, WalkPlayer};
+use crate::game::{Inventory, PlayerInput, Projectile, WeaponEvent};
 
 mod components;
 #[cfg(test)]
@@ -59,6 +60,7 @@ mod schedule;
 mod spawn;
 #[cfg(test)]
 mod tests;
+mod weapons;
 
 #[cfg(test)]
 use parse::atof;
@@ -587,6 +589,46 @@ impl MapEntities {
             }
         }
         out
+    }
+
+    /// Queues the weapon buttons the player of `slot` applies on the next tick. The
+    /// attack button is level-triggered; select and cycle are consumed once.
+    pub fn push_weapon_input(&mut self, slot: u8, input: PlayerInput) {
+        if let Some(entity) = players::entity_of(&mut self.world, slot) {
+            self.world
+                .entity_mut(entity)
+                .insert(weapons::WeaponCmd(input));
+        }
+    }
+
+    /// Weapon inventory of the player of `slot`.
+    pub fn inventory_mut(&mut self, slot: u8) -> Option<&mut Inventory> {
+        let entity = players::entity_of(&mut self.world, slot)?;
+        self.world
+            .get_mut::<Inventory>(entity)
+            .map(|inventory| inventory.into_inner())
+    }
+
+    pub fn inventory(&mut self, slot: u8) -> Option<&Inventory> {
+        let entity = players::entity_of(&mut self.world, slot)?;
+        self.world.get::<Inventory>(entity)
+    }
+
+    /// Dead players neither fire nor can be hit.
+    pub fn set_alive(&mut self, slot: u8, alive: bool) {
+        if let Some(entity) = players::entity_of(&mut self.world, slot) {
+            self.world.entity_mut(entity).insert(weapons::Alive(alive));
+        }
+    }
+
+    /// Weapon events (shots, impacts, damage) since the last call.
+    pub fn take_weapon_events(&mut self) -> Vec<WeaponEvent> {
+        weapons::take_events(&mut self.world)
+    }
+
+    /// Projectiles in flight, in spawn order.
+    pub fn projectiles(&self) -> Vec<Projectile> {
+        weapons::shots(&self.world)
     }
 
     /// Slots of all players, ascending.

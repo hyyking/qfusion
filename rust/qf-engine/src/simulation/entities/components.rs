@@ -187,4 +187,5 @@ pub(super) struct PendingTouches(pub Vec<Entity>);
 pub(super) struct Outbox {
     pub events: Vec<TriggerEvent>,
     pub predicted: Vec<PredictedEvent>,
+    pub weapons: Vec<crate::game::firing::WeaponEvent>,
 }
