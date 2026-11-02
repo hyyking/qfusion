@@ -436,10 +436,7 @@ impl HudElement for RecordIndicator {
         };
         let text = text_size(self.text.chars().count(), pixel);
         let dot_size = if dot { text[1] + pixel * 2.0 } else { 0.0 };
-        let [x, y] = self
-            .layout
-            .anchor
-            .place(screen, [dot_size + text[0], text[1]]);
+        let [x, y] = self.layout.anchor.place(screen, [dot_size + text[0], text[1]]);
         if dot {
             canvas.rects.push(Rect {
                 x,

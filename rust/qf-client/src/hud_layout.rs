@@ -202,9 +202,10 @@ mod tests {
 
     #[test]
     fn out_of_range_values_are_clamped() {
-        let layout =
-            HudLayout::parse("[elements.fps]\nscale = 100.0\ncolor = [2.0, -1.0, 0.5, 1.0]\n")
-                .unwrap();
+        let layout = HudLayout::parse(
+            "[elements.fps]\nscale = 100.0\ncolor = [2.0, -1.0, 0.5, 1.0]\n",
+        )
+        .unwrap();
         let fps = layout.get(FPS);
         assert_eq!(fps.scale, ElementLayout::MAX_SCALE);
         assert_eq!(fps.color, Some([1.0, 0.0, 0.5, 1.0]));
