@@ -531,6 +531,24 @@ impl MapEntities {
         true
     }
 
+    /// `G_UseTargets` for lump entity `entity`: fires everything it targets (and its
+    /// `killtarget`/`message`). Returns whether the entity exists.
+    pub fn use_targets_of(&mut self, entity: usize, time_ms: i64) -> bool {
+        let Some(Some(source)) = self
+            .world
+            .resource::<Registry>()
+            .by_lump
+            .get(entity)
+            .copied()
+        else {
+            return false;
+        };
+        self.world.resource_mut::<Level>().set_time(time_ms);
+        self.world.resource_mut::<components::Player>().0 = None;
+        logic::use_targets(&mut self.world, source);
+        true
+    }
+
     /// Current pose of every brush mover, in lump order.
     pub fn mover_poses(&self) -> Vec<MoverPose> {
         movers::poses(&self.world)
