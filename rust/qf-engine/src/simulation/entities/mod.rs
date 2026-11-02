@@ -578,6 +578,25 @@ impl MapEntities {
         }
     }
 
+    /// Movement events of every player since the last call, in slot order.
+    pub fn take_player_events(&mut self) -> Vec<(u8, PredictedEvent)> {
+        let mut out = Vec::new();
+        for (slot, entity) in players::in_slot_order(&mut self.world) {
+            if let Some(mut walker) = self.world.get_mut::<players::Walker>(entity) {
+                out.extend(walker.0.events.drain(..).map(|event| (slot, event)));
+            }
+        }
+        out
+    }
+
+    /// Slots of all players, ascending.
+    pub fn player_slots(&mut self) -> Vec<u8> {
+        players::in_slot_order(&mut self.world)
+            .into_iter()
+            .map(|(slot, _)| slot)
+            .collect()
+    }
+
     /// Movement state of the player of `slot`.
     pub fn player(&mut self, slot: u8) -> Option<&WalkPlayer> {
         let entity = players::entity_of(&mut self.world, slot)?;
