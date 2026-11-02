@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::crosshair::CrosshairShape;
 use crate::hud::{Anchor, HAnchor, VAnchor};
 
 pub const UPS: &str = "ups";
@@ -16,6 +17,7 @@ pub const FPS: &str = "fps";
 pub const RECORD: &str = "record";
 pub const WEAPONS: &str = "weapons";
 pub const AMMO: &str = "ammo";
+pub const CROSSHAIR: &str = "crosshair";
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -74,6 +76,8 @@ impl Default for ElementLayout {
 #[serde(default)]
 pub struct HudLayout {
     pub elements: BTreeMap<String, ElementLayout>,
+    /// Shape of the crosshair element.
+    pub crosshair: CrosshairShape,
 }
 
 impl HudLayout {
@@ -84,6 +88,7 @@ impl HudLayout {
             RECORD => ElementLayout::new(HAnchor::Left, VAnchor::Top, [16.0, 16.0]),
             WEAPONS => ElementLayout::new(HAnchor::Right, VAnchor::Bottom, [16.0, 16.0]),
             AMMO => ElementLayout::new(HAnchor::Right, VAnchor::Bottom, [16.0, 88.0]),
+            CROSSHAIR => ElementLayout::new(HAnchor::Center, VAnchor::Middle, [0.0, 0.0]),
             _ => ElementLayout::default(),
         }
     }
@@ -109,6 +114,7 @@ impl HudLayout {
         for (name, element) in &mut layout.elements {
             *element = element.sanitized(&Self::default_for(name));
         }
+        layout.crosshair = layout.crosshair.sanitized();
         Ok(layout)
     }
 
@@ -139,10 +145,11 @@ impl HudLayout {
 impl Default for HudLayout {
     fn default() -> Self {
         Self {
-            elements: [UPS, FPS, RECORD, WEAPONS, AMMO]
+            elements: [UPS, FPS, RECORD, WEAPONS, AMMO, CROSSHAIR]
                 .into_iter()
                 .map(|name| (name.to_owned(), Self::default_for(name)))
                 .collect(),
+            crosshair: CrosshairShape::default(),
         }
     }
 }
@@ -212,6 +219,20 @@ mod tests {
         let fps = layout.get(FPS);
         assert_eq!(fps.scale, ElementLayout::MAX_SCALE);
         assert_eq!(fps.color, Some([1.0, 0.0, 0.5, 1.0]));
+    }
+
+    #[test]
+    fn crosshair_shape_round_trips_and_old_files_get_defaults() {
+        use crate::crosshair::CrosshairStyle;
+        let mut layout = HudLayout::default();
+        layout.crosshair.style = CrosshairStyle::CrossDot;
+        layout.crosshair.gap = 6.0;
+        assert_eq!(HudLayout::parse(&layout.to_toml()).unwrap(), layout);
+        let old = HudLayout::parse("[elements.fps]\nenabled = false\n").unwrap();
+        assert_eq!(old.crosshair, CrosshairShape::default());
+        assert!(old.get(CROSSHAIR).enabled);
+        let bad = HudLayout::parse("[crosshair]\nsize = 9999.0\n").unwrap();
+        assert_eq!(bad.crosshair.size, CrosshairShape::MAX_SIZE);
     }
 
     #[test]

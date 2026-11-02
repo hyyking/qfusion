@@ -644,6 +644,21 @@ impl MapEntities {
         }
     }
 
+    /// Switches the player of `slot` between `pmove` walking and collision-free flight.
+    pub fn set_noclip(&mut self, slot: u8, noclip: bool) {
+        if let Some(entity) = players::entity_of(&mut self.world, slot) {
+            self.world
+                .entity_mut(entity)
+                .insert(players::Noclip(noclip));
+        }
+    }
+
+    pub fn noclip(&mut self, slot: u8) -> bool {
+        players::entity_of(&mut self.world, slot)
+            .and_then(|entity| self.world.get::<players::Noclip>(entity))
+            .is_some_and(|n| n.0)
+    }
+
     /// Weapon events (shots, impacts, damage) since the last call.
     pub fn take_weapon_events(&mut self) -> Vec<WeaponEvent> {
         weapons::take_events(&mut self.world)

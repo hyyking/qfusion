@@ -160,3 +160,61 @@ fn firing_replays_identically_and_changes_the_hash() {
     assert_eq!(run(true), run(true));
     assert_ne!(run(true), run(false));
 }
+
+#[test]
+fn noclip_flies_through_the_floor_and_reports_in_the_view() {
+    let mut sim = sim(WeaponId::Electrobolt, 0.0);
+    sim.set_noclip(0, true);
+    sim.push_input(
+        0,
+        WalkCommand {
+            up: -1.0,
+            ..WalkCommand::default()
+        },
+    );
+    for _ in 0..25 {
+        sim.tick(&Floor, &Models).unwrap();
+    }
+    let view = sim.view();
+    assert!(view.players[0].noclip && !view.players[1].noclip);
+    assert!(view.players[0].origin[2] < 0.0, "noclip ignores the floor");
+    sim.set_noclip(0, false);
+    assert!(!sim.noclip(0));
+}
+
+fn logged_run() -> (Sim, qf_engine::simulation::sim::SimLog) {
+    let mut sim = sim(WeaponId::Electrobolt, 0.0);
+    sim.start_log();
+    fire(&mut sim, true);
+    for _ in 0..30 {
+        sim.tick(&Floor, &Models).unwrap();
+    }
+    fire(&mut sim, false);
+    sim.set_noclip(1, true);
+    for _ in 0..10 {
+        sim.tick(&Floor, &Models).unwrap();
+    }
+    let log = sim.take_log().unwrap();
+    (sim, log)
+}
+
+#[test]
+fn a_log_replays_to_the_same_hashes_on_a_fresh_sim() {
+    use qf_engine::simulation::sim::SimReplayError;
+    let (_, log) = logged_run();
+    assert_eq!(log.ticks(), 40);
+    // Setup (players, inventory) is not part of the log, so rebuild it the same way.
+    let mut fresh = sim(WeaponId::Electrobolt, 0.0);
+    let mut inputs = log.clone();
+    inputs
+        .ops
+        .retain(|op| !matches!(op, qf_engine::simulation::sim::LogOp::Add { .. }));
+    assert_eq!(inputs.replay(&mut fresh, &Floor, &Models), Ok(()));
+
+    let mut other = sim(WeaponId::Electrobolt, 0.0);
+    other.set_alive(1, false);
+    assert!(matches!(
+        inputs.replay(&mut other, &Floor, &Models),
+        Err(SimReplayError::Diverged { .. })
+    ));
+}

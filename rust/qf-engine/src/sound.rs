@@ -523,16 +523,31 @@ mod tests {
         let bounds = vec![([0.0; 3], [0.0; 3]); 5];
         let mut m = MoverSounds::from_entities(&entities, &bounds);
         assert_eq!(m.sounds().len(), 3);
-        assert!(m.update(&[pose(1, 0.0), pose(2, 0.0), pose(3, 0.0)], 0.01).is_empty());
+        assert!(
+            m.update(&[pose(1, 0.0), pose(2, 0.0), pose(3, 0.0)], 0.01)
+                .is_empty()
+        );
         let ev = m.update(&[pose(1, 1.0), pose(2, 1.0), pose(3, 1.0)], 0.01);
-        let plays = ev.iter().filter(|e| matches!(e, SoundEvent::Play { .. })).count();
-        let loops = ev.iter().filter(|e| matches!(e, SoundEvent::LoopStart { .. })).count();
+        let plays = ev
+            .iter()
+            .filter(|e| matches!(e, SoundEvent::Play { .. }))
+            .count();
+        let loops = ev
+            .iter()
+            .filter(|e| matches!(e, SoundEvent::LoopStart { .. }))
+            .count();
         assert_eq!((plays, loops), (1, 1));
         let still = [pose(1, 1.0), pose(2, 1.0), pose(3, 1.0)];
         assert!(m.update(&still, 0.05).is_empty());
         let ev = m.update(&still, 0.06);
-        let plays = ev.iter().filter(|e| matches!(e, SoundEvent::Play { .. })).count();
-        let stops = ev.iter().filter(|e| matches!(e, SoundEvent::LoopStop { .. })).count();
+        let plays = ev
+            .iter()
+            .filter(|e| matches!(e, SoundEvent::Play { .. }))
+            .count();
+        let stops = ev
+            .iter()
+            .filter(|e| matches!(e, SoundEvent::LoopStop { .. }))
+            .count();
         assert_eq!((plays, stops), (2, 1));
     }
 

@@ -53,3 +53,7 @@ PRs 2 and 4 touch `bomb.rs` / `main.rs` HUD drawing and should rebase on the bom
 ## Open item
 
 The ECS migration (PRs 1-10) is merged, but only on the engine side: the client (`main.rs`, `bomb.rs`) still runs `ModeSimulation` and has no `Sim`, inventory or weapon input. The weapon/ammo HUD therefore needs a client-on-`Sim` PR first (PR 7a), then the HUD elements (PR 7b). Spectator noclip must map to a client movement mode.
+
+## Crosshair
+
+The `crosshair` HUD element (`crosshair.rs`) is a centred cross, dot or cross+dot drawn from rectangles, DPI-aware, hidden while a menu is open. Placement, scale, colour and visibility use the normal `[elements.crosshair]` layout entry; the shape is a `[crosshair]` table in `hud.toml` (`style` = `cross`/`dot`/`cross_dot`, `size`, `thickness`, `gap` in logical pixels, clamped). In the HUD editor select XHAIR, then `X` cycles style, `[` `]` size, `,` `.` thickness, `;` `'` gap.
