@@ -42,6 +42,9 @@ use super::pmove::{PMF_ON_GROUND, PMF_TIME_TELEPORT, PmEvent, PmType};
 use super::pmove::{PmoveState, PmoveTouch, PmoveWorld, PredictedEvent, TouchContext, Vec3};
 
 mod components;
+#[cfg(test)]
+mod determinism_tests;
+mod hash;
 mod logic;
 #[cfg(test)]
 mod mover_tests;
@@ -400,6 +403,30 @@ impl MapEntities {
         self.world.resource::<Level>().gravity
     }
 
+    /// Fixed ticks of level time seen by the entities so far.
+    pub fn tick(&self) -> u64 {
+        self.world.resource::<Level>().tick
+    }
+
+    /// Sets the match seed that [`Self::rng_stream`] derives from.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.world.resource_mut::<components::SimRng>().seed = seed;
+    }
+
+    /// Deterministic generator for `(current tick, purpose)`; independent of any
+    /// other consumer's draws.
+    pub fn rng_stream(&self, purpose: u32) -> crate::game::vec::Rng {
+        let tick = self.tick();
+        self.world
+            .resource::<components::SimRng>()
+            .stream(tick, purpose)
+    }
+
+    /// Hash of all simulated entity state, independent of spawn layout and query order.
+    pub fn state_hash(&self) -> u64 {
+        hash::state_hash(&self.world)
+    }
+
     /// Entities with a supported classname that could not be created.
     pub fn warnings(&self) -> &[SpawnWarning] {
         &self.warnings
@@ -471,7 +498,7 @@ impl MapEntities {
     /// Runs due thinks (`trigger_always`, `target_delay`, delayed uses) for a
     /// tick without a moving player.
     pub fn think(&mut self, time_ms: i64) {
-        self.world.resource_mut::<Level>().time_ms = time_ms;
+        self.world.resource_mut::<Level>().set_time(time_ms);
         self.world.resource_mut::<components::Player>().0 = None;
         logic::run_thinks(&mut self.world);
     }
@@ -491,7 +518,7 @@ impl MapEntities {
         if self.world.get::<components::UseKind>(target).is_none() {
             return false;
         }
-        self.world.resource_mut::<Level>().time_ms = time_ms;
+        self.world.resource_mut::<Level>().set_time(time_ms);
         self.world.resource_mut::<components::Player>().0 = None;
         logic::use_entity(&mut self.world, target);
         true

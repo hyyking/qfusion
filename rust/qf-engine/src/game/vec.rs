@@ -63,6 +63,17 @@ impl Rng {
         Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
     }
 
+    /// Independent generator for `(tick, purpose)` derived from the match seed, so adding
+    /// or reordering consumers never shifts the numbers another consumer sees.
+    pub fn substream(seed: u64, tick: u64, purpose: u32) -> Self {
+        let mut z =
+            seed ^ tick.rotate_left(32) ^ u64::from(purpose).wrapping_mul(0xA24B_AED4_963E_E407);
+        z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        Self::new(z ^ (z >> 31))
+    }
+
     pub fn next_u64(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x >> 12;

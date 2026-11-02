@@ -3,9 +3,11 @@
 
 mod bomb;
 mod game_sound;
+mod headless;
 mod hud;
 mod math;
 mod render;
+mod world;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -14,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use hud::HudElement;
 use qf_engine::content::bsp::{Bsp, WorldMesh, read_pk3_entry};
+use qf_engine::content::shader::ShaderLib;
 use qf_engine::game::Team;
 use qf_engine::simulation::bsp_world::BspWorld;
 use qf_engine::simulation::entities::{MapEntities, TriggerEvent};
@@ -26,7 +29,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
-const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen] [--record FILE]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
+const USAGE: &str = "usage: qf-client <map.bsp | pack.pk3> [--entry maps/wbomb1.bsp] [--sensitivity 3.0] [--game-dir <basewsw>]... [--team alpha|beta] [--freeplay] [--fullscreen] [--record FILE] [--screenshot out.png [--shot-eye x,y,z] [--shot-angles p,y,r] [--shot-size WxH]]\nF9 starts/stops a movement recording (see docs/movement-recording.md); --record FILE starts one at launch.";
 
 /// Legacy defaults (`source/client/cgame/cg_input.cpp`): view delta is
 /// counts * sensitivity * m_yaw/m_pitch with m_yaw = m_pitch = 0.022; acceleration
@@ -298,7 +301,8 @@ impl ApplicationHandler for App {
                 }
             }
         }
-        match render::Renderer::new(window.clone(), &world_mesh, submodels) {
+        let content = load_content(&self.game_dirs, self.map_pk3.as_deref());
+        match render::Renderer::new(window.clone(), &content, &self.bsp, &world_mesh, submodels) {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
                 eprintln!("failed to initialize renderer: {e}");
@@ -550,6 +554,13 @@ fn default_recording_path() -> PathBuf {
     PathBuf::from(format!("qf-recording-{seconds}.qfrec"))
 }
 
+struct Screenshot {
+    path: PathBuf,
+    eye: Option<[f32; 3]>,
+    angles: Option<[f32; 3]>,
+    size: (u32, u32),
+}
+
 struct Options {
     bsp: Arc<Bsp>,
     bomb: Option<bomb::BombSession>,
@@ -560,7 +571,36 @@ struct Options {
     map_pk3: Option<PathBuf>,
     map: MapIdentity,
     record_path: Option<PathBuf>,
+    screenshot: Option<Screenshot>,
     fullscreen: bool,
+}
+
+fn parse_triple(value: Option<String>, flag: &str) -> Result<[f32; 3], String> {
+    let parsed: Vec<f32> = value
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .map_while(|v| v.trim().parse().ok())
+        .collect();
+    parsed
+        .try_into()
+        .map_err(|_| format!("{flag} requires three comma-separated numbers"))
+}
+
+fn load_content(game_dirs: &[PathBuf], map_pk3: Option<&Path>) -> world::Content {
+    let mut shaders = ShaderLib::new();
+    let vfs = game_sound::mount_content(game_dirs, map_pk3);
+    let scripts = shaders.load_vfs(&vfs);
+    println!(
+        "content: {scripts} shaders parsed ({} script warnings)",
+        shaders.warnings.len()
+    );
+    if std::env::var_os("QF_SHADER_WARNINGS").is_some() {
+        for w in &shaders.warnings {
+            eprintln!("shader: {w}");
+        }
+    }
+    world::Content { vfs, shaders }
 }
 
 fn load_world_mesh() -> Result<Option<Options>, String> {
@@ -579,10 +619,38 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
     let mut game_dirs = Vec::new();
     let mut team = Team::Alpha;
     let mut freeplay = false;
+    let mut screenshot: Option<Screenshot> = None;
     let mut fullscreen = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--fullscreen" => fullscreen = true,
+            "--screenshot" => {
+                screenshot = Some(Screenshot {
+                    path: PathBuf::from(args.next().ok_or("--screenshot requires a path")?),
+                    eye: None,
+                    angles: None,
+                    size: (1280, 720),
+                });
+            }
+            "--shot-eye" | "--shot-angles" | "--shot-size" => {
+                let shot = screenshot
+                    .as_mut()
+                    .ok_or_else(|| format!("{arg} must follow --screenshot"))?;
+                match arg.as_str() {
+                    "--shot-eye" => shot.eye = Some(parse_triple(args.next(), &arg)?),
+                    "--shot-angles" => shot.angles = Some(parse_triple(args.next(), &arg)?),
+                    _ => {
+                        shot.size = args
+                            .next()
+                            .and_then(|v| {
+                                let (w, h) = v.split_once('x')?;
+                                Some((w.parse().ok()?, h.parse().ok()?))
+                            })
+                            .filter(|&(w, h)| w > 0 && h > 0)
+                            .ok_or("--shot-size requires WIDTHxHEIGHT")?
+                    }
+                }
+            }
             "--freeplay" => freeplay = true,
             "--team" => {
                 team = match args.next().as_deref() {
@@ -664,7 +732,22 @@ fn load_world_mesh() -> Result<Option<Options>, String> {
             .then(|| path.to_path_buf()),
         map,
         record_path,
+        screenshot,
     }))
+}
+
+fn take_screenshot(options: &Options, shot: &Screenshot) -> Result<(), Box<dyn std::error::Error>> {
+    let content = load_content(&options.game_dirs, options.map_pk3.as_deref());
+    let (eye, angles) = ModeSimulation::new(options.player).mode().view();
+    headless::screenshot(
+        &shot.path,
+        &content,
+        &options.bsp,
+        &options.mesh,
+        shot.eye.unwrap_or(eye),
+        shot.angles.unwrap_or(angles),
+        shot.size,
+    )
 }
 
 fn main() {
@@ -676,6 +759,14 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if let Some(shot) = &options.screenshot {
+        if let Err(e) = take_screenshot(&options, shot) {
+            eprintln!("screenshot failed: {e}");
+            std::process::exit(1);
+        }
+        println!("wrote {}", shot.path.display());
+        return;
+    }
 
     let event_loop = match EventLoop::new() {
         Ok(l) => l,
