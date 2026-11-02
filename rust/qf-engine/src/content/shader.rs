@@ -184,6 +184,8 @@ pub struct Stage {
     pub depth_equal: bool,
     /// Warsow `material` stage: the diffuse image lit by the lightmap.
     pub material: bool,
+    /// Shader `polygonoffset`: pulled toward the viewer so coplanar decals don't z-fight.
+    pub polygon_offset: bool,
 }
 
 impl Stage {
@@ -200,6 +202,7 @@ impl Stage {
             depth_write: true,
             depth_equal: false,
             material: false,
+            polygon_offset: false,
         }
     }
 }
@@ -494,7 +497,7 @@ fn eval_condition(args: &[String]) -> bool {
 /// warning, so what remains in `ShaderLib::warnings` is actionable.
 ///
 /// Shader level: compile/editor hints (`qer_*`, `q3map_*`), texture filtering flags and
-/// features the client does not implement yet (deform, portal, polygon offset, stencil,
+/// features the client does not implement yet (deform, portal, stencil,
 /// fog volumes, soft particles, GLSL tuning).
 pub const IGNORED_SHADER_DIRECTIVES: &[&str] = &[
     "nopicmip",
@@ -502,7 +505,6 @@ pub const IGNORED_SHADER_DIRECTIVES: &[&str] = &[
     "nocompress",
     "nofiltering",
     "smallestmipsize",
-    "polygonoffset",
     "stenciltest",
     "deformvertexes",
     "portal",
@@ -833,6 +835,7 @@ fn parse_shader_body(cur: &mut Cursor, name: &str, warnings: &mut Vec<String>) -
         sort: None,
         implicit: false,
     };
+    let mut polygon_offset = false;
     loop {
         cur.skip_newlines();
         match cur.peek() {
@@ -910,12 +913,14 @@ fn parse_shader_body(cur: &mut Cursor, name: &str, warnings: &mut Vec<String>) -
                         });
                         shader.parms.sky = true;
                     }
+                    "polygonoffset" => polygon_offset = true,
                     "sort" => {
                         shader.sort = args.first().and_then(|a| {
                             a.parse().ok().or(match a.to_ascii_lowercase().as_str() {
                                 "portal" => Some(2.0),
                                 "sky" => Some(2.0),
                                 "opaque" => Some(3.0),
+                                "decal" => Some(4.0),
                                 "banner" => Some(6.0),
                                 "underwater" => Some(8.0),
                                 "additive" => Some(9.0),
@@ -929,6 +934,12 @@ fn parse_shader_body(cur: &mut Cursor, name: &str, warnings: &mut Vec<String>) -
                     _ => warnings.push(format!("{name}: unknown directive `{key}`")),
                 }
             }
+        }
+    }
+    if polygon_offset {
+        shader.sort.get_or_insert(4.0);
+        for stage in &mut shader.stages {
+            stage.polygon_offset = true;
         }
     }
     shader
@@ -1267,6 +1278,16 @@ textures/a/after { { map after.tga } }
         let (lib, st) = stage_of("a {\n{\nmap a.tga\nblendfunc decal\n}\n}", "a");
         assert!(lib.warnings.is_empty(), "{:?}", lib.warnings);
         assert!(st[0].blend.is_some());
+    }
+
+    #[test]
+    fn polygonoffset_marks_stages_and_defaults_sort_to_decal() {
+        let (lib, st) = stage_of("a {\npolygonoffset\n{\nmap a.tga\n}\n}", "a");
+        assert!(lib.warnings.is_empty(), "{:?}", lib.warnings);
+        assert!(st[0].polygon_offset);
+        assert_eq!(lib.resolve("a").sort, Some(4.0));
+        let (_, plain) = stage_of("b {\n{\nmap b.tga\n}\n}", "b");
+        assert!(!plain[0].polygon_offset);
     }
 
     #[test]
