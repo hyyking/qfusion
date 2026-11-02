@@ -10,6 +10,7 @@ mod loadout;
 mod math;
 mod menu;
 mod render;
+mod weapon_hud;
 mod world;
 
 use std::collections::HashSet;
@@ -62,6 +63,8 @@ struct App {
     hud_ups: hud::UpsCounter,
     hud_fps: hud::FpsCounter,
     hud_record: hud::RecordIndicator,
+    /// Fed once the client runs on Sim (no inventory before that).
+    weapon_hud: weapon_hud::WeaponHud,
     recorder: Option<Recorder>,
     record_path: Option<PathBuf>,
     map: MapIdentity,
@@ -124,6 +127,8 @@ impl App {
         hud_fps.set_layout(layout.get(hud_layout::FPS));
         let mut hud_record = hud::RecordIndicator::new();
         hud_record.set_layout(layout.get(hud_layout::RECORD));
+        let mut weapon_hud = weapon_hud::WeaponHud::new();
+        weapon_hud.set_layout(&layout);
         let mut app = Self {
             window: None,
             renderer: None,
@@ -140,6 +145,7 @@ impl App {
             hud_ups,
             hud_fps,
             hud_record,
+            weapon_hud,
             recorder: None,
             record_path: None,
             map,
@@ -671,6 +677,7 @@ impl ApplicationHandler for App {
                     self.hud_ups.draw(&screen, &mut self.hud_canvas);
                     self.hud_fps.draw(&screen, &mut self.hud_canvas);
                     self.hud_record.draw(&screen, &mut self.hud_canvas);
+                    self.weapon_hud.draw(&screen, &mut self.hud_canvas);
                     if let Some(bomb) = &self.bomb {
                         bomb.hud.draw(&screen, &mut self.hud_canvas);
                     }
