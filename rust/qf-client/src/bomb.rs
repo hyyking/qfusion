@@ -10,6 +10,7 @@ use qf_engine::simulation::pmove::{PMFEAT_DASH, PMFEAT_JUMP, PMFEAT_WALLJUMP, Pm
 use qf_engine::simulation::walk::{ModeSimulation, MovementMode};
 
 use crate::hud::{Anchor, Canvas, HAnchor, Rect, Screen, VAnchor, text_size};
+use crate::loadout::Loadout;
 use crate::menu::TeamChoice;
 
 const LOCKED_SPEED: i32 = 100;
@@ -19,6 +20,8 @@ pub struct BombSession {
     player: usize,
     unlocked_stats: Option<PmoveStats>,
     spectating: bool,
+    /// Last accepted loadout choices (the script is authoritative).
+    pub loadout: Loadout,
     pub hud: BombHud,
 }
 
@@ -32,6 +35,7 @@ impl BombSession {
             player,
             unlocked_stats: None,
             spectating: false,
+            loadout: Loadout::default(),
             hud: BombHud::default(),
         })
     }
@@ -105,11 +109,31 @@ impl BombSession {
         }
     }
 
-    pub fn command(&mut self, name: &str, args: &str) {
+    pub fn command(&mut self, name: &str, args: &str) -> bool {
         match self.host.command(self.player, name, args) {
-            Ok(true) => {}
-            Ok(false) => println!("{name}: not allowed right now"),
-            Err(error) => eprintln!("{name}: {error}"),
+            Ok(true) => true,
+            Ok(false) => {
+                println!("{name}: not allowed right now");
+                false
+            }
+            Err(error) => {
+                eprintln!("{name}: {error}");
+                false
+            }
+        }
+    }
+
+    pub fn set_primary(&mut self, pair: [&'static str; 2]) {
+        if let Some(args) = Loadout::primary_args(pair)
+            && self.command("primary", &args)
+        {
+            self.loadout.primary = pair;
+        }
+    }
+
+    pub fn set_secondary(&mut self, weapon: &'static str) {
+        if Loadout::is_valid_secondary(weapon) && self.command("secondary", weapon) {
+            self.loadout.secondary = weapon;
         }
     }
 
