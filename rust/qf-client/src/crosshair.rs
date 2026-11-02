@@ -284,14 +284,27 @@ mod tests {
     }
 
     #[test]
-    fn dragged_anchor_moves_it_off_center() {
+    fn crosshair_is_always_centered_whatever_the_layout_says() {
         let mut layout = HudLayout::default();
         let mut c = layout.get(hud_layout::CROSSHAIR);
         c.anchor.horizontal = HAnchor::Left;
         c.anchor.margin = [10.0, 0.0];
         layout.set(hud_layout::CROSSHAIR, c);
-        let [x0, ..] = bounds(&drawn(&layout, &SCREEN));
-        assert!(x0 < 100.0);
+        let [x0, y0, x1, y1] = bounds(&drawn(&layout, &SCREEN));
+        assert!(((x0 + x1) * 0.5 - 500.0).abs() <= 1.0);
+        assert!(((y0 + y1) * 0.5 - 300.0).abs() <= 1.0);
+    }
+
+    #[test]
+    fn saved_offcenter_anchor_is_ignored_on_load() {
+        let text = "[elements.crosshair.anchor]\nhorizontal = \"Left\"\nvertical = \"Top\"\nmargin = [5.0, 5.0]\n";
+        let layout = HudLayout::parse(text).unwrap();
+        let anchor = layout.get(hud_layout::CROSSHAIR).anchor;
+        assert_eq!(
+            (anchor.horizontal, anchor.vertical),
+            (HAnchor::Center, VAnchor::Middle)
+        );
+        assert_eq!(anchor.margin, [0.0, 0.0]);
     }
 
     #[test]
