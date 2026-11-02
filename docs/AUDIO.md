@@ -45,6 +45,11 @@ preloads built-in and map sounds, starts the speakers, and each frame sets the l
 drained pmove events. `B` plays `sounds/menu/ok`. Missing sounds print once to stderr
 (e.g. `sounds/world/tele_out` does not exist in the stock packs; the client registers an opt-in `AudioSystem::add_fallback` of `tele_out` -> `tele_in`, reported once, while the engine default still only reports).
 
+## Explosions
+The bomb gametype emits an `explosion` event (`origin`, `radius`) for each blast entity it detonates. The client
+(`GameSound::play_explosions`) plays `sounds/weapons/rocket_strong_explosion` there with `ATTN_NORM`, as legacy
+`EV_EXPLOSION2` does. The freeplay client has no projectile simulation, so only bomb-site blasts produce it.
+
 ## Mover sounds
 `MoverSounds` (qf-engine `sound.rs`) covers `func_door`, `func_door_rotating` and `func_plat`. The client derives
 start/stop from per-frame `MoverPose` changes (idle for 0.1 s means stopped), so the simulation is untouched. Defaults

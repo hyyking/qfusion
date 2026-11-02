@@ -801,6 +801,10 @@ impl ApplicationHandler for App {
                             return;
                         }
                     }
+                    let explosions = std::mem::take(&mut bomb.explosions);
+                    if let Some(audio) = &mut self.audio {
+                        audio.play_explosions(&explosions);
+                    }
                 }
                 self.collect_recorded_ticks();
                 let trigger_events = self.simulation.drain_trigger_events();

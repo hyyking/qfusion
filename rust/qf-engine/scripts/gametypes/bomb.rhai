@@ -774,6 +774,7 @@ fn run_pending(g) {
     }
     this.pending = later;
     for e in due {
+        g.emit("explosion", #{ origin: e.origin, radius: e.radius });
         this.radius_damage(g, e.origin, e.radius, e.damage, true);
     }
 }
