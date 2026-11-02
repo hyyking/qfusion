@@ -2,6 +2,7 @@
 //! Renders a parsed BSP world mesh. Mouse look uses raw device motion (cursor events are ignored). Escape releases the grab, click or focus re-grabs, Shift+Escape or window close exits.
 
 mod bomb;
+mod crosshair;
 mod game_sound;
 mod headless;
 mod hud;
@@ -67,6 +68,7 @@ struct App {
     hud_record: hud::RecordIndicator,
     /// Fed once the client runs on Sim (no inventory before that).
     weapon_hud: weapon_hud::WeaponHud,
+    crosshair: crosshair::Crosshair,
     recorder: Option<Recorder>,
     record_path: Option<PathBuf>,
     map: MapIdentity,
@@ -146,6 +148,8 @@ impl App {
         hud_record.set_layout(layout.get(hud_layout::RECORD));
         let mut weapon_hud = weapon_hud::WeaponHud::new();
         weapon_hud.set_layout(&layout);
+        let mut crosshair = crosshair::Crosshair::new();
+        crosshair.set_layout(&layout);
         let mut app = Self {
             window: None,
             renderer: None,
@@ -163,6 +167,7 @@ impl App {
             hud_fps,
             hud_record,
             weapon_hud,
+            crosshair,
             recorder: None,
             record_path: None,
             map,
@@ -313,6 +318,7 @@ impl App {
         self.hud_fps.set_layout(layout.get(hud_layout::FPS));
         self.hud_record.set_layout(layout.get(hud_layout::RECORD));
         self.weapon_hud.set_layout(layout);
+        self.crosshair.set_layout(layout);
         self.layout = layout.clone();
     }
 
@@ -527,6 +533,13 @@ impl ApplicationHandler for App {
                                 "C" => Some(hud_editor::EditorKey::PrevColor),
                                 "r" => Some(hud_editor::EditorKey::Reset),
                                 "R" => Some(hud_editor::EditorKey::ResetAll),
+                                "x" | "X" => Some(hud_editor::EditorKey::Style),
+                                "]" => Some(hud_editor::EditorKey::SizeUp),
+                                "[" => Some(hud_editor::EditorKey::SizeDown),
+                                "." => Some(hud_editor::EditorKey::ThicknessUp),
+                                "," => Some(hud_editor::EditorKey::ThicknessDown),
+                                "'" => Some(hud_editor::EditorKey::GapUp),
+                                ";" => Some(hud_editor::EditorKey::GapDown),
                                 _ => None,
                             },
                             _ => None,
@@ -808,6 +821,9 @@ impl ApplicationHandler for App {
                     self.hud_fps.draw(&screen, &mut self.hud_canvas);
                     self.hud_record.draw(&screen, &mut self.hud_canvas);
                     self.weapon_hud.draw(&screen, &mut self.hud_canvas);
+                    if !self.menu.is_open() {
+                        self.crosshair.draw(&screen, &mut self.hud_canvas);
+                    }
                     if let Some(bomb) = &self.bomb {
                         bomb.hud.draw(&screen, &mut self.hud_canvas);
                     }
