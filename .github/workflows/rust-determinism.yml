@@ -1,0 +1,24 @@
+name: rust-determinism
+
+# The simulation must be bit-identical across platforms. The golden state-hash checkpoints
+# in rust/qf-engine/tests/bomb_synthetic.rs and the pmove trace harness fail on any drift.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    paths: ["rust/**", ".github/workflows/rust-determinism.yml"]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p qf-engine --test bomb_synthetic --test pmove_traces --test game_host --test game_sandbox

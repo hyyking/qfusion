@@ -127,3 +127,19 @@ fn radius_damage_picks_living_players_in_range_with_falloff() {
     assert_eq!(hits[1].int("victim"), Some(1));
     assert_eq!(events.iter().filter(|e| e.kind == "flat").count(), 2);
 }
+
+#[test]
+fn repeated_faults_disable_the_gametype_until_a_reload() {
+    let mut host = host("fn init(g) {} fn tick(g) { loop {} }");
+    host.set_fault_limit(Some(2));
+    assert!(!host.disabled());
+    host.tick().unwrap_err();
+    host.tick().unwrap_err();
+    assert!(host.disabled());
+    let message = host.tick().unwrap_err().to_string();
+    assert!(message.contains("disabled"), "{message}");
+    assert_eq!(host.faults(), 2, "a disabled host runs nothing");
+    host.reload_script("fn init(g) {} fn tick(g) {}").unwrap();
+    assert!(!host.disabled());
+    host.tick().unwrap();
+}
