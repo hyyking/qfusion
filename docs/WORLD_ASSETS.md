@@ -8,7 +8,7 @@ The client renders the BSP world with the game's own content instead of flat col
 | --- | --- | --- |
 | Virtual file system | `qf-engine::content::vfs` | Mounts every `*.pk3` of a game directory (alphabetical, later packs override earlier ones) plus the map pk3. Shared with the audio loader (`game_sound::mount_content`). |
 | Shader scripts | `qf-engine::content::shader` | Parses `scripts/*.shader`. First definition wins. Shaders without a script resolve to an implicit lightmap + diffuse shader. |
-| Images | `qf-engine::content::image` | tga/jpg/png via the `image` crate, KTX1 (ETC1/ETC2/BC1-3) via `texture2ddecoder`. The extension is tried in legacy order. Mip chains are generated on the CPU. |
+| Images | `qf-engine::content::image` | tga/jpg/png via the `image` crate, KTX1 via `texture2ddecoder` (ETC1/ETC2/BC1-3) or direct 8-bit decode (ALPHA8 0x803C, LUMINANCE8, LUMINANCE8_ALPHA8 0x8045, RGB/RGBA/BGR/BGRA). Format is sniffed from the magic, so KTX data stored as `.tga` works. Stored KTX mips are used when the chain is complete, otherwise mips are generated on the CPU (`load_mip_chain`). A built-in TGA decoder handles 24 bpp files with alpha descriptor bits that the `image` crate rejects. `$whiteimage`, `*black` and `*grey` are built in. |
 | BSP lightmaps | `qf-engine::content::bsp::lightmap` | Decodes the lightmap lump (128x128 IBSP, 512x512 FBSP), builds one atlas and per-vertex lightmap UVs. Vertex colours are carried through (including patches). |
 | GPU side | `qf-client::world`, `bsp.wgsl` | Per-shader batches, one draw per stage, dynamic-offset stage uniforms (tcmod/rgbgen/alphagen are evaluated on the CPU each frame). Movers (submodels) use the same batches. |
 
@@ -21,7 +21,17 @@ The client renders the BSP world with the game's own content instead of flat col
 exactvertex, oneminusvertex, wave basics), `alphagen`, `tcgen` (base, lightmap, environment,
 vector), `tcmod` (scroll, scale, rotate, turb, stretch basics), `depthwrite`, `depthfunc`,
 `cull`, `sort`, `surfaceparm` (sky, nodraw/skip, trans, nonsolid, nolightmap, fog, water),
-`skyparms` (far box).
+`skyparms` (far box), `if`/`endif` conditionals (assumed capabilities: glsl, cube maps, 16384 max texture size; no deluxe maps or portals), `rgbgen`/`alphagen` incl. `lightingidentity`, `distanceramp` (far value), `teamcolor`/`teamcolorwave` (rendered as identity), `colorwave`, `blendfunc decal`/`filterlighting` (as legacy fallback), `material` without arguments (shader name), `animclampmap`.
+
+Directives that are deliberately ignored without a warning are listed in `IGNORED_SHADER_DIRECTIVES`, `IGNORED_SHADER_PREFIXES` (`qer_`, `q3map_`) and `IGNORED_STAGE_DIRECTIVES` in `shader.rs`, so every remaining warning is actionable. All 15 warnings left on the official maps are typos in the content (`identitiy`, `sutfaceparm`, `rbggen`, ...), which legacy also rejects.
+
+## Auditing content
+
+`cargo run --release -p qf-engine --bin world-audit -- <game-dir> [--map x.pk3] [--verbose]` parses shaders and resolves every BSP shader image and builtin/speaker sound headlessly for each map. Official 2.1 data (38 maps): warnings 7790 -> 608 (15 unique), checker (unreadable) textures 60 -> 0, missing textures 64 -> 56 (13 unique: `noshader` and genuinely absent content such as `textures/facility/concrete3`).
+
+## Known missing content
+
+`sounds/world/tele_out` (also requested by legacy `S_TELEPORT_OUT`) is not in any official pack; the resolver already tries `.ogg` and `.wav`, so this is not a lookup bug and the preload report is expected.
 
 Missing images are replaced by a checker texture and logged (`texture: '...' missing`).
 `nodraw`/`skip` surfaces and shaders are not drawn. Set `QF_SHADER_WARNINGS` to print parser
@@ -41,9 +51,9 @@ Renders one frame without a window and exits.
 - Dynamic lights, lightgrid lighting for models, lightstyles.
 - Post-processing and fog volumes.
 - Sky cloud layers (`skyparms` near box), sun, and `deformvertexes`.
-- GLSL `material` details (normal maps, gloss), `teamcolor` rgbgen, `blendfunc decal`,
-  `polygonoffset`, `endif` conditionals.
+- GLSL `material` details (normal maps, gloss), real team colours and viewer distance for
+  `distanceramp`, `polygonoffset`, `videomap`/`surroundmap`.
 - Face culling (surface winding is not yet trusted, everything is double sided).
 - Skybox face orientation of the side faces needs a visual check on more maps.
-- KTX luminance-alpha (0x8045) images and other uncommon internal formats.
+- Lightgrid/lightarray lumps are not decoded; they only light models, so they wait for model rendering.
 - Lightmap brightness (`LIGHT_SCALE`) and overbright handling versus the legacy renderer.
