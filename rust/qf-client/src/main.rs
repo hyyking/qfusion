@@ -3,6 +3,7 @@
 
 mod bomb;
 mod crosshair;
+mod fx;
 mod game_sound;
 mod headless;
 mod hud;
@@ -79,6 +80,7 @@ struct App {
     crosshair: crosshair::Crosshair,
     /// Collected from the keyboard and mouse; handed to the simulation once per frame.
     weapon_input: weapon_input::WeaponInput,
+    fx: fx::Fx,
     recorder: Option<Recorder>,
     record_path: Option<PathBuf>,
     map: MapIdentity,
@@ -178,6 +180,7 @@ impl App {
             weapon_hud,
             crosshair,
             weapon_input: weapon_input::WeaponInput::default(),
+            fx: fx::Fx::default(),
             recorder: None,
             record_path: None,
             map,
@@ -832,6 +835,7 @@ impl ApplicationHandler for App {
                     .simulation
                     .inventory()
                     .map(weapon_hud::WeaponSnapshot::from_inventory);
+                let projectiles = self.simulation.projectiles();
                 if let Some(r) = &mut self.renderer {
                     for (entity, visible) in pickup_changes {
                         r.set_entity_visible(entity, visible);
@@ -851,6 +855,15 @@ impl ApplicationHandler for App {
                         frame_seconds: elapsed.as_secs_f32(),
                     });
                     self.hud_canvas.clear();
+                    self.fx.update(elapsed.as_secs_f32(), &frame.weapons);
+                    self.fx.draw(
+                        &mut self.hud_canvas,
+                        &projectiles,
+                        eye,
+                        self.view_angles,
+                        self.fov,
+                        [width, height],
+                    );
                     self.hud_record.update(&hud::HudState {
                         velocity: [0.0; 3],
                         frame_seconds: elapsed.as_secs_f32(),

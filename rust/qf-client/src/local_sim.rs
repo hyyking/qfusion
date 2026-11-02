@@ -116,6 +116,10 @@ impl LocalSim {
         self.sim.inventory(LOCAL_SLOT)
     }
 
+    pub fn projectiles(&mut self) -> Vec<qf_engine::game::Projectile> {
+        self.sim.view().projectiles
+    }
+
     pub fn movers(&self) -> Vec<qf_engine::simulation::entities::MoverPose> {
         self.sim.map().mover_poses()
     }
