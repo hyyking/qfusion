@@ -4,6 +4,7 @@ use std::path::Path;
 
 use qf_engine::content::bsp::{Bsp, WorldMesh};
 
+use crate::dlight::EffectLights;
 use crate::model_render::{ModelRenderer, props_from_entities};
 use crate::render::{begin_world_pass, create_depth_view, view_projection};
 use crate::world::{Content, WorldRenderer};
@@ -20,6 +21,7 @@ pub fn screenshot(
     view_angles: [f32; 3],
     (width, height): (u32, u32),
     fov_x: f32,
+    lights: &[[f32; 3]],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
@@ -52,8 +54,13 @@ pub fn screenshot(
     let view = target.create_view(&Default::default());
     let depth = create_depth_view(&device, width, height);
     let mvp = view_projection(eye, view_angles, width as f32 / height as f32, fov_x);
-    world.prepare(&queue, mvp, eye, 0.0, &[]);
-    models.prepare(&queue, mvp, eye, 0.0);
+    let mut effects = EffectLights::default();
+    for &origin in lights {
+        effects.explosion(origin, 400.0);
+    }
+    let lights = effects.lights();
+    world.prepare(&queue, mvp, eye, 0.0, &[], &lights);
+    models.prepare(&queue, mvp, eye, 0.0, &lights);
 
     let row_bytes = width * 4;
     let padded = row_bytes.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);

@@ -9,6 +9,7 @@ use winit::window::Window;
 use qf_engine::content::bsp::{Bsp, WorldMesh};
 use qf_engine::simulation::entities::MoverPose;
 
+use crate::dlight::DynamicLight;
 use crate::hud::Canvas;
 use crate::math;
 use crate::model_render::{ModelRenderer, props_from_entities};
@@ -165,6 +166,7 @@ pub struct Renderer {
     start: Instant,
     /// Horizontal field of view in degrees.
     fov_x: f32,
+    lights: Vec<DynamicLight>,
 }
 
 impl Renderer {
@@ -229,7 +231,13 @@ impl Renderer {
             depth_view,
             start: Instant::now(),
             fov_x,
+            lights: Vec::new(),
         })
+    }
+
+    /// Replaces the dynamic lights drawn this frame (explosions and other effects).
+    pub fn set_lights(&mut self, lights: Vec<DynamicLight>) {
+        self.lights = lights;
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -272,8 +280,10 @@ impl Renderer {
         let aspect = self.config.width as f32 / self.config.height as f32;
         let mvp = view_projection(eye, view_angles, aspect, self.fov_x);
         let time = self.start.elapsed().as_secs_f32();
-        self.world.prepare(&self.queue, mvp, eye, time, movers);
-        self.models.prepare(&self.queue, mvp, eye, time);
+        self.world
+            .prepare(&self.queue, mvp, eye, time, movers, &self.lights);
+        self.models
+            .prepare(&self.queue, mvp, eye, time, &self.lights);
 
         let world_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.world_format),

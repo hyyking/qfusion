@@ -11,6 +11,7 @@ use qf_engine::content::image::{Rgba8Image, load_mip_chain};
 use qf_engine::content::md3::{self, Md3Surface};
 use qf_engine::content::shader::{Blend, MapSource, Shader};
 
+use crate::dlight::{self, DynamicLight, PackedLights};
 use crate::item_models::model_for_classname;
 use crate::math::Mat4;
 use crate::world::{Content, DEPTH_FORMAT, blend_factor, upload_texture};
@@ -96,6 +97,8 @@ struct ModelVertex {
 struct ViewUniform {
     mvp: Mat4,
     eye: [f32; 4],
+    light_count: [f32; 4],
+    lights: PackedLights,
 }
 
 #[repr(C)]
@@ -334,13 +337,23 @@ impl ModelRenderer {
         }
     }
 
-    pub fn prepare(&self, queue: &wgpu::Queue, mvp: Mat4, eye: [f32; 3], time: f32) {
+    pub fn prepare(
+        &self,
+        queue: &wgpu::Queue,
+        mvp: Mat4,
+        eye: [f32; 3],
+        time: f32,
+        lights: &[DynamicLight],
+    ) {
+        let (lights, count) = dlight::pack(lights);
         queue.write_buffer(
             &self.view_buf,
             0,
             bytemuck::bytes_of(&ViewUniform {
                 mvp,
                 eye: [eye[0], eye[1], eye[2], time],
+                light_count: [count as f32, 0.0, 0.0, 0.0],
+                lights,
             }),
         );
         let stride = self.instance_stride as usize;
