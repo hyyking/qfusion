@@ -182,6 +182,21 @@ fn entities_excluded_from_the_bomb_gametype_are_not_spawned() {
 }
 
 #[test]
+fn hud_is_published_once_per_tick() {
+    let mut host = host(1);
+    let id = host.add_player(Team::Alpha).unwrap();
+    host.tick().unwrap();
+    let before = host.hud(id).unwrap();
+    assert_eq!(before.get("ticks"), Some(&Value::Int(1)));
+    host.damage(id, None, 150.0).unwrap();
+    assert_eq!(host.hud(id).unwrap(), before, "stale until the next tick");
+    host.tick().unwrap();
+    let after = host.hud(id).unwrap();
+    assert_eq!(after.get("ticks"), Some(&Value::Int(2)));
+    assert_ne!(after.get("health"), before.get("health"));
+}
+
+#[test]
 fn weapon_events_route_damage_through_the_script() {
     use qf_engine::game::{WeaponEvent, WeaponId};
     let mut host = host(1);
