@@ -4,20 +4,24 @@
 // Elements are listed by name; sizes are approximations of each element's on-screen box.
 #![allow(dead_code)]
 
+use crate::crosshair::{self, CrosshairShape};
 use crate::hud::{Anchor, Canvas, HAnchor, Rect, Screen, VAnchor, text_size};
 use crate::hud_layout::{self, ElementLayout, HudLayout};
 use crate::menu::Bounds;
 use crate::weapon_hud::WeaponHud;
 
-pub const ELEMENTS: [&str; 5] = [
+pub const ELEMENTS: [&str; 6] = [
     hud_layout::UPS,
     hud_layout::FPS,
     hud_layout::RECORD,
     hud_layout::WEAPONS,
     hud_layout::AMMO,
+    hud_layout::CROSSHAIR,
 ];
 
 pub const SCALE_STEP: f32 = 0.25;
+/// Step in logical pixels for crosshair size, thickness and gap.
+pub const SHAPE_STEP: f32 = 1.0;
 
 /// Colour overrides cycled with the colour keys; the first entry is "element default".
 pub const COLORS: [Option<[f32; 4]>; 8] = [
@@ -42,6 +46,14 @@ pub enum EditorKey {
     PrevColor,
     Reset,
     ResetAll,
+    /// Crosshair shape keys; only apply while the crosshair is selected.
+    Style,
+    SizeUp,
+    SizeDown,
+    ThicknessUp,
+    ThicknessDown,
+    GapUp,
+    GapDown,
     Save,
     Cancel,
 }
@@ -63,12 +75,18 @@ pub fn label(name: &str) -> &'static str {
         hud_layout::RECORD => "REC",
         hud_layout::WEAPONS => "WEAPONS",
         hud_layout::AMMO => "AMMO",
+        hud_layout::CROSSHAIR => "XHAIR",
         _ => "?",
     }
 }
 
 /// Approximate size in pixels of an element's box.
-pub fn element_size(name: &str, layout_scale: f32, screen_scale: f32) -> [f32; 2] {
+pub fn element_size(
+    name: &str,
+    layout_scale: f32,
+    screen_scale: f32,
+    crosshair: &CrosshairShape,
+) -> [f32; 2] {
     let pixel = 3.0 * layout_scale * screen_scale;
     match name {
         hud_layout::UPS | hud_layout::FPS => {
@@ -82,6 +100,10 @@ pub fn element_size(name: &str, layout_scale: f32, screen_scale: f32) -> [f32; 2
         }
         hud_layout::WEAPONS => WeaponHud::bar_size(6, layout_scale, screen_scale),
         hud_layout::AMMO => WeaponHud::ammo_size(layout_scale, screen_scale),
+        hud_layout::CROSSHAIR => {
+            let side = crosshair::box_size(crosshair, layout_scale, screen_scale);
+            [side, side]
+        }
         _ => [pixel * 10.0, pixel * 7.0],
     }
 }
@@ -159,7 +181,7 @@ impl HudEditor {
 
     pub fn bounds(&self, name: &str, screen: &Screen) -> Bounds {
         let layout = self.working.get(name);
-        let size = element_size(name, layout.scale, screen.scale);
+        let size = element_size(name, layout.scale, screen.scale, &self.working.crosshair);
         let [x, y] = layout.anchor.place(screen, size);
         Bounds {
             x,
@@ -190,7 +212,7 @@ impl HudEditor {
         };
         let name = self.selected();
         let mut layout = self.working.get(name);
-        let size = element_size(name, layout.scale, screen.scale);
+        let size = element_size(name, layout.scale, screen.scale, &self.working.crosshair);
         layout.anchor = snap_anchor(screen, size, [cursor[0] - offset[0], cursor[1] - offset[1]]);
         self.working.set(name, layout);
         EditorOutcome::Changed
@@ -205,6 +227,25 @@ impl HudEditor {
         let mut layout = self.working.get(name);
         f(&mut layout);
         self.working.set(name, layout);
+        EditorOutcome::Changed
+    }
+
+    fn edit_shape(&mut self, key: EditorKey) -> EditorOutcome {
+        if self.selected() != hud_layout::CROSSHAIR {
+            return EditorOutcome::None;
+        }
+        let shape = &mut self.working.crosshair;
+        match key {
+            EditorKey::Style => shape.style = shape.style.next(),
+            EditorKey::SizeUp => shape.size += SHAPE_STEP,
+            EditorKey::SizeDown => shape.size -= SHAPE_STEP,
+            EditorKey::ThicknessUp => shape.thickness += SHAPE_STEP,
+            EditorKey::ThicknessDown => shape.thickness -= SHAPE_STEP,
+            EditorKey::GapUp => shape.gap += SHAPE_STEP,
+            EditorKey::GapDown => shape.gap -= SHAPE_STEP,
+            _ => return EditorOutcome::None,
+        }
+        *shape = shape.sanitized();
         EditorOutcome::Changed
     }
 
@@ -231,12 +272,22 @@ impl HudEditor {
             EditorKey::Reset => {
                 let name = self.selected();
                 self.working.set(name, HudLayout::default_for(name));
+                if name == hud_layout::CROSSHAIR {
+                    self.working.crosshair = CrosshairShape::default();
+                }
                 EditorOutcome::Changed
             }
             EditorKey::ResetAll => {
                 self.working.reset();
                 EditorOutcome::Changed
             }
+            EditorKey::Style
+            | EditorKey::SizeUp
+            | EditorKey::SizeDown
+            | EditorKey::ThicknessUp
+            | EditorKey::ThicknessDown
+            | EditorKey::GapUp
+            | EditorKey::GapDown => self.edit_shape(key),
             EditorKey::Save => EditorOutcome::Save(self.working.clone()),
             EditorKey::Cancel => EditorOutcome::Cancel,
         }
@@ -283,6 +334,10 @@ impl HudEditor {
                 });
             }
             let mut text = label(name).to_owned();
+            if *name == hud_layout::CROSSHAIR {
+                text.push(' ');
+                text.push_str(self.working.crosshair.style.name());
+            }
             if !layout.enabled {
                 text.push_str(" OFF");
             }
@@ -297,6 +352,7 @@ impl HudEditor {
         let help = [
             "HUD LAYOUT  DRAG TO MOVE  TAB SELECT",
             "E TOGGLE  +/- SCALE  C COLOUR  R RESET  SHIFT R ALL",
+            "XHAIR: X STYLE  [ ] SIZE  , . THICKNESS  ; ' GAP",
             "ENTER SAVE  ESC CANCEL",
         ];
         for (i, line) in help.iter().enumerate() {
@@ -378,8 +434,8 @@ mod tests {
     #[test]
     fn click_on_empty_space_selects_nothing() {
         let mut editor = HudEditor::new(&HudLayout::default());
-        assert_eq!(editor.element_at(&SCREEN, [500.0, 300.0]), None);
-        editor.pointer_down(&SCREEN, [500.0, 300.0]);
+        assert_eq!(editor.element_at(&SCREEN, [300.0, 200.0]), None);
+        editor.pointer_down(&SCREEN, [300.0, 200.0]);
         assert!(!editor.is_dragging());
     }
 
@@ -431,6 +487,31 @@ mod tests {
         assert!(editor.original().get(hud_layout::UPS).enabled);
         editor.key(EditorKey::ResetAll);
         assert!(editor.layout().get(hud_layout::UPS).enabled);
+    }
+
+    #[test]
+    fn crosshair_shape_keys_only_apply_when_selected() {
+        let mut editor = HudEditor::new(&HudLayout::default());
+        assert_eq!(editor.key(EditorKey::Style), EditorOutcome::None);
+        while editor.selected() != hud_layout::CROSSHAIR {
+            editor.key(EditorKey::Next);
+        }
+        let before = editor.layout().crosshair;
+        assert_eq!(editor.key(EditorKey::Style), EditorOutcome::Changed);
+        assert_ne!(editor.layout().crosshair.style, before.style);
+        editor.key(EditorKey::SizeUp);
+        editor.key(EditorKey::GapDown);
+        editor.key(EditorKey::ThicknessUp);
+        let shape = editor.layout().crosshair;
+        assert_eq!(shape.size, before.size + SHAPE_STEP);
+        assert_eq!(shape.gap, before.gap - SHAPE_STEP);
+        assert_eq!(shape.thickness, before.thickness + SHAPE_STEP);
+        for _ in 0..200 {
+            editor.key(EditorKey::GapDown);
+        }
+        assert_eq!(editor.layout().crosshair.gap, 0.0);
+        editor.key(EditorKey::Reset);
+        assert_eq!(editor.layout().crosshair, CrosshairShape::default());
     }
 
     #[test]
