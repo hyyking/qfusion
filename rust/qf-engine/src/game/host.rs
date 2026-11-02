@@ -18,6 +18,7 @@ use crate::simulation::bsp_world::BspWorld;
 use crate::simulation::pmove::{PmTrace, PmoveWorld, Vec3};
 
 use super::combat::{Player, Team};
+use super::roster::Roster;
 use super::vec::{Bounds, Rng, add, distance, dot, length, scale, sub};
 
 pub const TICK_MS: u64 = 8;
@@ -122,13 +123,12 @@ impl GameEvent {
 
 struct Core {
     now: u64,
-    players: Vec<Player>,
+    roster: Roster,
     entities: rhai::Array,
     world: Arc<dyn GameWorld>,
     world_bounds: Bounds,
     rng: Rng,
     events: Vec<GameEvent>,
-    movement_locked: bool,
 }
 
 #[derive(Clone)]
@@ -143,7 +143,7 @@ impl Game {
         let mut core = self.core();
         let player = usize::try_from(id)
             .ok()
-            .and_then(|id| core.players.get_mut(id))
+            .and_then(|id| core.roster.get_mut(id))
             .ok_or_else(|| format!("no such player {id}"))?;
         Ok(f(player))
     }
@@ -265,7 +265,7 @@ fn register_api(engine: &mut Engine) {
             Ok(g.core().world_bounds.contains(to_vec3(&point)?))
         },
     );
-    engine.register_fn("player_count", |g: &mut Game| g.core().players.len() as i64);
+    engine.register_fn("player_count", |g: &mut Game| g.core().roster.len() as i64);
     engine.register_fn("team", |g: &mut Game, id: i64| {
         g.player_mut(id, |p| p.team.index() as i64)
     });
@@ -368,7 +368,7 @@ fn register_api(engine: &mut Engine) {
         },
     );
     engine.register_fn("set_movement_locked", |g: &mut Game, locked: bool| {
-        g.core().movement_locked = locked;
+        g.core().roster.set_movement_locked(locked);
     });
     engine.register_fn("emit", |g: &mut Game, kind: &str, data: Map| {
         let fields = data
@@ -479,7 +479,7 @@ impl GameHost {
         let hooks = ast.iter_functions().map(|f| f.name.to_string()).collect();
         let game = Game(Arc::new(Mutex::new(Core {
             now: 0,
-            players: Vec::new(),
+            roster: Roster::new(),
             entities: entities
                 .iter()
                 .map(|e| Dynamic::from(export_entity(e, models)))
@@ -491,7 +491,6 @@ impl GameHost {
             }),
             rng: Rng::new(seed),
             events: Vec::new(),
-            movement_locked: true,
         })));
         let mut host = Self {
             game,
@@ -533,11 +532,7 @@ impl GameHost {
     }
 
     pub fn add_player(&mut self, team: Team) -> Result<usize, GameError> {
-        let id = {
-            let mut core = self.game.core();
-            core.players.push(Player::new(team));
-            core.players.len() - 1
-        };
+        let id = self.game.core().roster.add(team);
         self.call("on_player_joined", (self.game.clone(), id as i64))
             .map(drop)?;
         Ok(id)
@@ -595,7 +590,7 @@ impl GameHost {
         pitch: f32,
     ) {
         let mut core = self.game.core();
-        let player = &mut core.players[id];
+        let player = core.roster.get_mut(id).expect("no such player");
         if player.alive {
             player.origin = origin;
             player.velocity = velocity;
@@ -609,7 +604,7 @@ impl GameHost {
     }
 
     pub fn movement_locked(&self) -> bool {
-        self.game.core().movement_locked
+        self.game.core().roster.movement_locked()
     }
 
     pub fn now_ms(&self) -> u64 {
@@ -617,11 +612,16 @@ impl GameHost {
     }
 
     pub fn player(&self, id: usize) -> Player {
-        self.game.core().players[id].clone()
+        self.game
+            .core()
+            .roster
+            .get(id)
+            .expect("no such player")
+            .clone()
     }
 
     pub fn player_count(&self) -> usize {
-        self.game.core().players.len()
+        self.game.core().roster.len()
     }
 
     /// Gametype-defined HUD values for one player (see the script's `hud` hook).

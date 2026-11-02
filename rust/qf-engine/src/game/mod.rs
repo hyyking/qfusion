@@ -2,6 +2,7 @@
 
 pub mod combat;
 pub mod host;
+pub mod roster;
 pub mod vec;
 
 pub use combat::{Player, Team};
