@@ -7,6 +7,7 @@ mod headless;
 mod hud;
 mod hud_layout;
 mod math;
+mod menu;
 mod render;
 mod world;
 
@@ -66,6 +67,9 @@ struct App {
     hud_canvas: hud::Canvas,
     sensitivity: f32,
     mouse_grabbed: bool,
+    menu: menu::Menu,
+    /// Last cursor position in window pixels, for menu hit-testing.
+    cursor: [f32; 2],
     /// The first raw motion after a grab can carry a stale jump; drop it.
     skip_next_motion: bool,
     /// Raw motion accumulated since the last frame; consumed once per redraw.
@@ -141,6 +145,8 @@ impl App {
             hud_canvas: hud::Canvas::default(),
             sensitivity,
             mouse_grabbed: false,
+            menu: menu::Menu::pause(),
+            cursor: [0.0; 2],
             skip_next_motion: false,
             mouse_delta: [0.0; 2],
             last_frame: None,
@@ -254,6 +260,41 @@ impl App {
         self.mouse_delta = [0.0; 2];
     }
 
+    fn screen(&self) -> hud::Screen {
+        let (width, height) = self.renderer.as_ref().map_or((1.0, 1.0), |r| {
+            let [w, h] = r.size();
+            (w, h)
+        });
+        hud::Screen {
+            width,
+            height,
+            scale: self
+                .window
+                .as_ref()
+                .map_or(1.0, |w| w.scale_factor() as f32),
+        }
+    }
+
+    fn open_menu(&mut self) {
+        self.menu.open();
+        self.set_mouse_grab(false);
+    }
+
+    fn apply_ui_action(&mut self, action: menu::UiAction, event_loop: &ActiveEventLoop) {
+        match action {
+            menu::UiAction::Resume => {
+                self.menu.close();
+                self.set_mouse_grab(true);
+            }
+            menu::UiAction::Quit => event_loop.exit(),
+            menu::UiAction::Command { name, args } => {
+                if let Some(bomb) = &mut self.bomb {
+                    bomb.command(&name, &args);
+                }
+            }
+        }
+    }
+
     fn alt_held(&self) -> bool {
         self.pressed_keys.contains(&KeyCode::AltLeft)
             || self.pressed_keys.contains(&KeyCode::AltRight)
@@ -358,6 +399,29 @@ impl ApplicationHandler for App {
                     }
                 }
                 if event.state == ElementState::Pressed && !event.repeat {
+                    if self.menu.is_open() {
+                        let shift = self.pressed_keys.contains(&KeyCode::ShiftLeft)
+                            || self.pressed_keys.contains(&KeyCode::ShiftRight);
+                        let menu_key = match &event.logical_key {
+                            Key::Named(NamedKey::ArrowUp) => Some(menu::MenuKey::Up),
+                            Key::Named(NamedKey::ArrowDown) => Some(menu::MenuKey::Down),
+                            Key::Named(NamedKey::Enter) if !self.alt_held() => {
+                                Some(menu::MenuKey::Activate)
+                            }
+                            Key::Named(NamedKey::Escape) if !shift => Some(menu::MenuKey::Back),
+                            _ => None,
+                        };
+                        if let Some(key) = menu_key {
+                            if let Some(action) = self.menu.key(key) {
+                                self.apply_ui_action(action, event_loop);
+                            }
+                            return;
+                        }
+                        // Gameplay binds are inert while a menu is open.
+                        if !matches!(event.logical_key, Key::Named(_)) {
+                            return;
+                        }
+                    }
                     match event.logical_key {
                         Key::Named(NamedKey::F11) => self.toggle_fullscreen(),
                         Key::Named(NamedKey::Enter) if self.alt_held() => self.toggle_fullscreen(),
@@ -367,7 +431,7 @@ impl ApplicationHandler for App {
                             if shift {
                                 event_loop.exit();
                             } else {
-                                self.set_mouse_grab(false);
+                                self.open_menu();
                             }
                         }
                         Key::Character(ref key) if key == "+" || key == "=" => {
@@ -408,6 +472,21 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = [position.x as f32, position.y as f32];
+                let screen = self.screen();
+                self.menu.hover(&screen, self.cursor);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.menu.is_open() => {
+                let screen = self.screen();
+                if let Some(action) = self.menu.click(&screen, self.cursor) {
+                    self.apply_ui_action(action, event_loop);
+                }
+            }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Right,
@@ -423,7 +502,11 @@ impl ApplicationHandler for App {
                 self.right_mouse_down = false;
                 self.set_mouse_grab(false);
             }
-            WindowEvent::Focused(true) => self.set_mouse_grab(true),
+            WindowEvent::Focused(true) => {
+                if !self.menu.is_open() {
+                    self.set_mouse_grab(true);
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
@@ -456,12 +539,22 @@ impl ApplicationHandler for App {
                 } else {
                     self.key_axis(KeyCode::KeyR, KeyCode::KeyF)
                 };
+                let in_game = !self.menu.is_open();
                 let command = WalkCommand {
-                    forward: self.key_axis(KeyCode::KeyW, KeyCode::KeyS),
-                    right: self.key_axis(KeyCode::KeyD, KeyCode::KeyA),
-                    up,
-                    special: self.right_mouse_down
-                        || self.pressed_keys.contains(&KeyCode::ShiftLeft),
+                    forward: if in_game {
+                        self.key_axis(KeyCode::KeyW, KeyCode::KeyS)
+                    } else {
+                        0.0
+                    },
+                    right: if in_game {
+                        self.key_axis(KeyCode::KeyD, KeyCode::KeyA)
+                    } else {
+                        0.0
+                    },
+                    up: if in_game { up } else { 0.0 },
+                    special: in_game
+                        && (self.right_mouse_down
+                            || self.pressed_keys.contains(&KeyCode::ShiftLeft)),
                     view_angles,
                 };
                 self.view_angles = view_angles;
@@ -543,6 +636,8 @@ impl ApplicationHandler for App {
                     if let Some(bomb) = &self.bomb {
                         bomb.hud.draw(&screen, &mut self.hud_canvas);
                     }
+                    self.menu
+                        .draw(&screen, Some(self.cursor), &mut self.hud_canvas);
                     let movers = self
                         .simulation
                         .entities()
