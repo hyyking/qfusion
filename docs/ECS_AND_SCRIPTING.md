@@ -339,11 +339,11 @@ and same-seed determinism passing unchanged unless stated.
    per-tick `HudState`; remove the per-frame `hud` call. `bomb.rhai` changes are limited to using
    handles; the headless scenarios (plant/explode, defuse, timeout, eliminations, role swap, score
    limit) remain the oracle.
-9. **Recording/replay.** Input-log recorder/player, checkpoint hashes, a recorded Bomb round
-   fixture, cross-platform CI hash check.
-10. **Hot reload (dev) and cleanup.** `on_reload` behind a dev flag; delete the adapters and the
-    old `GameHost` core; update `BOMB_AND_DEFUSE.md`, `qf-engine/SUMMARY.md` and the entity/scripting
-    paragraphs of `ENGINE_PORT.md`.
+9. **Recording/replay.** *(Done: `game::replay`, `GameHost::state_hash`; fixture is generated in
+   tests, cross-platform CI hash check not added.)* Input-log recorder/player, checkpoint hashes.
+10. **Hot reload (dev) and cleanup.** *(Partly done: `GameHost::reload_script` + `on_reload`;
+    docs updated. Not done: Bomb state as components, engine `radius_damage` via
+    `SimEvent::Weapon`, removing the `GameHost` core/adapters, handle types.)*
 
 **Same-seed determinism through 5-8:** each PR first keeps `g.*` behaviour identical so the
 `fingerprint(bsp, seed)` event stream is equal before and after. Intended behaviour changes (spawn

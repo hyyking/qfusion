@@ -541,6 +541,7 @@ pub struct GameHost {
     hooks: BTreeSet<String>,
     state: Dynamic,
     faults: u32,
+    reloads: u32,
 }
 
 impl fmt::Debug for GameHost {
@@ -659,6 +660,7 @@ impl GameHost {
             hooks,
             state: Dynamic::from(Map::new()),
             faults: 0,
+            reloads: 0,
         };
         for required in ["init", "tick"] {
             if !host.hooks.contains(required) {
@@ -705,6 +707,34 @@ impl GameHost {
     /// the caller's policy.
     pub fn faults(&self) -> u32 {
         self.faults
+    }
+
+    /// Hot reload for development. Call between ticks, never from inside a hook. The new
+    /// source is compiled and checked for the required hooks first; on failure the old
+    /// script keeps running and the error is returned. On success the AST is swapped,
+    /// the script's `ScriptState` is kept and `on_reload(g, old_version)` runs if the new
+    /// script defines it. A reload makes a running recording non-replayable (the script
+    /// hash no longer matches), see [`Self::reloads`].
+    pub fn reload_script(&mut self, script: &str) -> Result<(), GameError> {
+        let ast = self.engine.compile(script).map_err(script_error)?;
+        let hooks: BTreeSet<String> = ast.iter_functions().map(|f| f.name.to_string()).collect();
+        for required in ["init", "tick"] {
+            if !hooks.contains(required) {
+                return Err(script_error(format!("script lacks `{required}`")));
+            }
+        }
+        let old_version = self.reloads as i64;
+        self.ast = ast;
+        self.hooks = hooks;
+        self.reloads += 1;
+        self.call("on_reload", (self.game.clone(), old_version))
+            .map(drop)
+    }
+
+    /// Number of successful hot reloads; `0` means the script is the one the host was
+    /// built with.
+    pub fn reloads(&self) -> u32 {
+        self.reloads
     }
 
     pub fn start_match(&mut self) -> Result<(), GameError> {
@@ -813,6 +843,31 @@ impl GameHost {
 
     pub fn now_ms(&self) -> u64 {
         self.game.core().now
+    }
+
+    /// FNV-1a hash of all simulated game state: clock, RNG, every player, the movement
+    /// lock, the map entity world and the script's private state, in a canonical order
+    /// (slot order; `Map` keys sort). Equal hashes mean equal games; replay checkpoints
+    /// compare it. `GameEvent`s are outputs, not state, and are not hashed.
+    pub fn state_hash(&self) -> u64 {
+        let core = self.game.core();
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        let mut feed = |bytes: &[u8]| {
+            for byte in bytes {
+                hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        feed(&core.now.to_le_bytes());
+        feed(&core.rng.state().to_le_bytes());
+        feed(&[u8::from(core.roster.movement_locked())]);
+        feed(&core.map.state_hash().to_le_bytes());
+        for slot in 0..core.roster.len() {
+            if let Some(player) = core.roster.get(slot) {
+                feed(format!("{player:?}").as_bytes());
+            }
+        }
+        feed(format!("{:?}", self.state).as_bytes());
+        hash
     }
 
     pub fn player(&self, id: usize) -> Player {

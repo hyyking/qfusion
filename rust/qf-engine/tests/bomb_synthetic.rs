@@ -193,3 +193,76 @@ fn script_swap_rule_matches_legacy() {
     assert!(swap(0, 0));
     assert!(swap(0, 1));
 }
+
+mod replay {
+    use super::*;
+    use qf_engine::game::replay::{GameLog, Op, Recorder, ReplayError};
+
+    fn record() -> GameLog {
+        let mut r = Recorder::new(host(&map()), BOMB_SCRIPT, 5, 50);
+        r.input(Op::Join(Team::Alpha)).unwrap();
+        r.input(Op::Join(Team::Beta)).unwrap();
+        r.input(Op::StartMatch).unwrap();
+        for tick in 0..6_000 {
+            let carrier = if tick > 2_600 {
+                [300.0, 0.0, 24.0]
+            } else {
+                [0.0, 0.0, 24.0]
+            };
+            for (id, origin) in [(0, carrier), (1, [1000.0, 0.0, 24.0])] {
+                r.input(Op::Motion {
+                    id,
+                    origin,
+                    velocity: [0.0; 3],
+                    yaw: 0.0,
+                    pitch: 0.0,
+                })
+                .unwrap();
+            }
+            if tick == 2_700 {
+                r.input(Op::Command {
+                    id: 1,
+                    name: "drop".into(),
+                    args: String::new(),
+                })
+                .unwrap();
+            }
+            r.input(Op::Tick).unwrap();
+        }
+        r.finish().unwrap()
+    }
+
+    fn replay(log: &GameLog) -> Result<(), ReplayError> {
+        log.replay(&mut host(&map()), BOMB_SCRIPT)
+    }
+
+    #[test]
+    fn a_recorded_round_replays_to_the_same_checkpoints() {
+        let log = record();
+        assert_eq!(log.checkpoints.len(), 120);
+        replay(&log).unwrap();
+        let reparsed = GameLog::from_text(&log.to_text()).unwrap();
+        assert_eq!(reparsed, log);
+        replay(&reparsed).unwrap();
+    }
+
+    #[test]
+    fn a_changed_input_diverges_at_a_checkpoint() {
+        let mut log = record();
+        for op in &mut log.ops {
+            if let Op::Motion { origin, .. } = op
+                && origin[0] == 300.0
+            {
+                origin[0] = -900.0;
+            }
+        }
+        assert!(matches!(replay(&log), Err(ReplayError::Diverged { .. })));
+    }
+
+    #[test]
+    fn a_different_script_is_rejected() {
+        let log = record();
+        let error = log.replay(&mut host(&map()), "// other").unwrap_err();
+        assert!(matches!(error, ReplayError::ScriptMismatch { .. }));
+    }
+}

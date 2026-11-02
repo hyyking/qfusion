@@ -63,7 +63,12 @@ decals, dead camera, scoreboard, callvotes, warmup, networking.
 - The brief said master had a trigger/entity system; at the start of this work it did not (it was
   in PR #22). After rebasing onto master the client uses it (`advance_frame_with_entities`), but the
   gametype scans entities itself and does not depend on `simulation::entities`.
-- ENGINE_PORT.md says Rhai for built-in gametype scripts: followed. `bevy_ecs` is not used;
-  the host owns plain player structs behind an engine interface.
+- ENGINE_PORT.md says Rhai for built-in gametype scripts: followed. `bevy_ecs` now backs the
+  simulation (Option B in `docs/ECS_AND_SCRIPTING.md`): players live in the `Roster` world, map
+  entities in `MapEntities`, weapons in `Sim`, HUD values are published per tick. Bomb state itself
+  is still an opaque, hashed `ScriptState` map owned by the script (not `Bomb`/`BombSite`
+  components), and `GameHost` still drives rules directly rather than through `Sim`.
+- Dev tools: `GameHost::reload_script` (hot reload, keeps `ScriptState`, calls `on_reload`) and
+  `game::replay` (input-log recording with `state_hash` checkpoints).
 - Rules written in a script give up compile-time checking; the headless tests guard them.
 - Preserved legacy quirks: `swap_roles` formula; fast-plant tracking omitted.
