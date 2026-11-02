@@ -274,7 +274,75 @@ fn export_entity(entity: &Entity, models: &[Model]) -> Map {
     map
 }
 
+fn field_number(entity: &Map, key: &str, default: f64) -> f64 {
+    entity
+        .get(key)
+        .and_then(|v| v.clone().into_string().ok())
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(default)
+}
+
+/// The `target_explosion` / `func_explosive` entities named `target`, as blast
+/// descriptions (`origin`, `radius`, `damage`, `delay` in ms) in map order. Defaults
+/// follow the legacy `G_Spawn` rules: radius falls back to `dmg + 100`, damage is at least 1.
+fn map_explosives(entities: &[Dynamic], target: &str) -> rhai::Array {
+    let mut blasts = rhai::Array::new();
+    for entity in entities {
+        let Some(entity) = entity.read_lock::<Map>() else {
+            continue;
+        };
+        let text = |key: &str| entity.get(key).and_then(|v| v.clone().into_string().ok());
+        let (Some(name), Some(class)) = (text("targetname"), text("classname")) else {
+            continue;
+        };
+        if name != target {
+            continue;
+        }
+        let mut damage = field_number(&entity, "dmg", 0.0);
+        let mut radius = field_number(&entity, "radius", 0.0);
+        if radius <= 0.0 {
+            radius = damage + 100.0;
+        }
+        let delay = field_number(&entity, "delay", 0.0);
+        damage = damage.max(1.0);
+        let origin = match class.to_ascii_lowercase().as_str() {
+            "target_explosion" => entity
+                .get("origin")
+                .and_then(|v| v.clone().into_array().ok()),
+            "func_explosive" => entity
+                .get("bounds")
+                .and_then(|v| v.clone().try_cast::<Map>())
+                .and_then(|b| {
+                    let mins = b.get("mins")?.clone().into_array().ok()?;
+                    let maxs = b.get("maxs")?.clone().into_array().ok()?;
+                    let centre = |i: usize| -> Option<Dynamic> {
+                        let (lo, hi) =
+                            (mins.get(i)?.as_float().ok()?, maxs.get(i)?.as_float().ok()?);
+                        Some(Dynamic::from_float((lo + hi) * 0.5))
+                    };
+                    Some(vec![centre(0)?, centre(1)?, centre(2)?])
+                }),
+            _ => None,
+        };
+        let Some(origin) = origin else { continue };
+        let mut blast = Map::new();
+        blast.insert("origin".into(), Dynamic::from(origin));
+        blast.insert("radius".into(), Dynamic::from_float(radius));
+        blast.insert("damage".into(), Dynamic::from_float(damage));
+        blast.insert(
+            "delay".into(),
+            Dynamic::from((delay * 1000.0).round() as i64),
+        );
+        blasts.push(Dynamic::from(blast));
+    }
+    blasts
+}
+
 fn register_api(engine: &mut Engine) {
+    engine.register_fn("explosives", |g: &mut Game, target: &str| {
+        map_explosives(&g.core().entities, target)
+    });
     engine.register_type_with_name::<Game>("Game");
     engine.register_fn("now", |g: &mut Game| g.core().now as i64);
     engine.register_fn("rand", |g: &mut Game, count: i64| -> ScriptResult<i64> {

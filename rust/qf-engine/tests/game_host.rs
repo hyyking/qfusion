@@ -167,6 +167,45 @@ fn scripts_fire_map_use_chains_and_see_them_as_events() {
 }
 
 #[test]
+fn engine_discovers_map_explosives_with_legacy_defaults() {
+    let entities = [
+        relay(&[
+            ("classname", "target_explosion"),
+            ("targetname", "boom"),
+            ("origin", "10 20 30"),
+            ("dmg", "50"),
+            ("delay", "0.5"),
+        ]),
+        relay(&[
+            ("classname", "target_explosion"),
+            ("targetname", "other"),
+            ("origin", "0 0 0"),
+        ]),
+        relay(&[
+            ("classname", "target_explosion"),
+            ("targetname", "boom"),
+            ("origin", "1 2 3"),
+            ("radius", "64"),
+        ]),
+    ];
+    let script = r#"fn init(g) {
+        let b = g.explosives("boom");
+        g.emit("r", #{ n: b.len(), radius0: b[0].radius, damage0: b[0].damage, delay0: b[0].delay,
+                       radius1: b[1].radius, damage1: b[1].damage, none: g.explosives("nope").len() });
+    } fn tick(g) {}"#;
+    let mut host = GameHost::new(script, Arc::new(Floor), &entities, &[], None, 1).unwrap();
+    let events = host.take_events();
+    let r = &events[0];
+    assert_eq!(r.fields.get("n"), Some(&Value::Int(2)));
+    assert_eq!(r.fields.get("radius0"), Some(&Value::Float(150.0)));
+    assert_eq!(r.fields.get("damage0"), Some(&Value::Float(50.0)));
+    assert_eq!(r.fields.get("delay0"), Some(&Value::Int(500)));
+    assert_eq!(r.fields.get("radius1"), Some(&Value::Float(64.0)));
+    assert_eq!(r.fields.get("damage1"), Some(&Value::Float(1.0)));
+    assert_eq!(r.fields.get("none"), Some(&Value::Int(0)));
+}
+
+#[test]
 fn entities_excluded_from_the_bomb_gametype_are_not_spawned() {
     let entities = [
         relay(&[("classname", "target_relay"), ("not_gametype", "bomb")]),
