@@ -81,7 +81,7 @@ MapIr {
 
 **EntityIr**:
 
-- `entities: Vec<MapEntity>` in **file order** (order matters: `G_Find` semantics, spawn order and `targetname` lookups are order dependent). Each entity has ordered `(key, value)` pairs (duplicate keys preserved, matching `Entity::get` first-match semantics) and an optional resolved `brush_model: Option<SubmodelId>`.
+- `entities: Vec<MapEntity>` in **file order** (order matters: `G_Find` semantics, spawn order and `targetname` lookups are order dependent). Each entity has ordered `(key, value)` pairs (duplicate keys preserved, matching `Entity::get`, where the **last** matching pair wins; add a regression test) and an optional resolved `brush_model: Option<SubmodelId>`.
 - Parsing of game semantics (`classname` handling, `spawnflags`, gametype filter, `target`/`targetname`) stays in the game layer. The IR only carries key/values. This keeps `passes_gametype_filter`, spawn selection and `SpeakerSet` unchanged apart from taking `&[MapEntity]`.
 - Sources without an entity lump (glTF, OBJ) either carry entities in sidecar data or via glTF extras/nodes mapped by the converter (see §7).
 
@@ -178,6 +178,23 @@ struct LoadContext<'a> {
 - **Serialization choice** is deferred to implementation: `serde` + `bincode`/`postcard` is the simple default; `rkyv` allows zero-copy mmap for large maps. Either way the encoder must be canonical (sorted maps, fixed endianness: little-endian, `f32` bit patterns preserved, no NaN canonicalization).
 - Because the cache is a derived artifact, **the source remains authoritative**. A flag `--no-map-cache` forces reparse (used by CI to prove cached and fresh IR give identical trace hashes).
 
+## 9b. Authoring: editing maps and entities from mesh and brush editors
+
+`MapIr` as described above is a **compiled, immutable runtime snapshot**. FBSP (and any compiled BSP) is lossy: it has no brush construction history, texture axes, groups/layers, prefabs or compile settings. Editors therefore need a separate, source-authoritative layer:
+
+```
+sources (.map, glTF, editor project, FBSP import)  -->  MapDocument  --compile-->  MapIr  -->  adapters
+                                                              ^                       |
+                                                              +-- MapEditCommand      +--> export: FBSP (compiled only), glTF, .map
+```
+
+- **`MapDocument`** (editable): entities (ordered key/values, duplicates preserved and surfaced in the UI), brushes with ordered `BrushFace { plane, material, texture projection (axes/offset/rotation/scale or UV basis), face flags }`, patches (`PatchDocument`: control grid with per-point position/UV/colour/normal, material, stable point ids), meshes (`MeshDocument`: topology, normals/tangent policy, material slots, optional authored collision proxy), groups/layers, and brush-model ownership (entity -> brush set). Face polygons are derived cache data, not authoritative; the compiler rebuilds them from planes with deterministic rules and rejects open/non-convex/degenerate brushes with diagnostics.
+- **Stable identity**: every document object has a persistent opaque id (entity, brush, face, patch, control point/mesh element, material, layer, inline model). Rules are defined for import (ids derived deterministically from source order), duplicate (new ids), delete, merge and export. The compiler emits an `IdMap` (document id -> runtime `MaterialId`/`SubmodelId`/surface/brush ranges); runtime ids stay compact indices and may change between compiles, document ids never do.
+- **Editing model**: `MapEditCommand`s applied in transactions to a revisioned document, each with an inverse (or snapshot policy) for undo/redo and a dirty set. Brush/patch edits invalidate that object's collision, render and bounds (and affected acceleration chunks); entity-property edits rebuild entity output only; material edits do not rebuild collision unless contents/surface semantics change.
+- **Compile and preview**: each compile yields a new immutable `MapIr` revision (all affected sections swapped together, never mixed across revisions). The sim never sees a swap mid-run in match mode; an editor/freeplay preview mode restarts or pauses the sim at a revision boundary, and recordings store the IR content hash. FBSP export is a *compile target* (BSP tree, vis, lightmaps are a compiler responsibility, possibly an external tool) and not a lossless editor source; `.map` and the editor project format are the lossless sources.
+- **Capability contract per format**: each loader/exporter declares `{read_document, write_document, read_compiled, write_compiled}` so tools know what survives a round trip (FBSP: read compiled + optional lossy document recovery from brushes/planes; `.map`: lossless document; glTF: semantic mesh document, collision via proxy or generated brushes).
+- **Migration**: the editing layer is *after* the IR stabilises (new step 14 below); the IR design here must not preclude it, hence document ids in `IdMap` and `AssetRef`/`MaterialRef` provenance.
+
 ## 10. Validation
 
 A `validate(&MapIr) -> Vec<Diagnostic>` pass runs after every load (and when reading a cache entry):
@@ -237,8 +254,10 @@ Each PR must keep green: `cargo test -p qf-engine` (including `pmove_bsp`, `move
 9. **Validation + diagnostics.** `validate` pass; `world-audit`/`bsp-inspect` run on IR; shared diagnostics type.
 10. **Binary container + cache.** Serialization, cache key, `--no-map-cache`; CI check that cached and fresh IR produce identical trace hashes.
 11. **Loader trait + registry + `AssetSource`.** `Vfs` as stack of sources; FBSP and IBSP registered through the registry. Remove public `Bsp` fields from non-loader code.
-12. **Second-format proof:** Q3 IBSP/RBSP loader (nearly free), then a glTF/OBJ prototype (render + collision proxy + entities from extras) to validate the IR shape. Quake `.map` / Q1 later.
+12. **Second-format proof:** Q3 IBSP loader (already parsed today as `Format::Ibsp`; RBSP is currently only detected and rejected, so it is a separate milestone with its own layout work and fixtures), then a glTF/OBJ prototype (render + collision proxy + entities from extras) to validate the IR shape. Quake `.map` / Q1 later.
 13. **Hot reload** of materials/textures in the client (dev flag), then optional asset-system wrapper.
+
+14. **`MapDocument` and editing commands** (see §9b): document model, stable ids, brush/patch/mesh compile to `MapIr`, undo/redo, `.map` read/write, then editor preview mode.
 
 ## 14. Risks
 
@@ -253,6 +272,8 @@ Each PR must keep green: `cargo test -p qf-engine` (including `pmove_bsp`, `move
 - **Recordings.** Existing recordings reference maps by name; add the IR content hash without invalidating old recordings.
 
 ## 15. Open questions
+
+0. Editing (new requirement: edit maps and entities from mesh and brush editors): is the lossless source format Quake `.map`, an editor project format, or glTF with extras? Do we write our own FBSP compiler (BSP/vis/lightmaps) or call an external one (q3map2-like)? Which editors must be supported (external such as Trenchbroom/Blender, or an in-engine editor)?
 
 1. Which non-BSP source matters first: Q3 IBSP/RBSP, glTF, OBJ, or Quake `.map`? This decides the second converter and what the IR must prove.
 2. Is bit-identical collision required for **all** brush-based sources (IBSP/RBSP) or only FBSP? (This document assumes FBSP and IBSP only.)
