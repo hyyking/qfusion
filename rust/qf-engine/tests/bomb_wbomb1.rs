@@ -100,6 +100,9 @@ fn plant_and_explosion_wins_for_attackers() {
         "blast kills must not score twice"
     );
     assert_eq!(h.find("bomb_exploded").len(), 1);
+    for blast in h.find("explosion") {
+        assert!(blast.vec3("origin").is_some() && blast.float("radius").is_some());
+    }
 }
 
 #[test]

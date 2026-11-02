@@ -9,9 +9,11 @@ use qf_engine::content::vfs::Vfs;
 use qf_engine::simulation::entities::TriggerEvent;
 use qf_engine::simulation::walk::ModeSimulation;
 use qf_engine::sound::{
-    SOUND_TELEPORT_IN, SOUND_TELEPORT_OUT, SoundChannel, SoundEvent, SoundName, SoundPosition,
-    SpeakerSet, sound_for_pmove_event, sounds_for_trigger_event,
+    ATTN_NORM, SOUND_TELEPORT_IN, SOUND_TELEPORT_OUT, SoundChannel, SoundEvent, SoundName,
+    SoundPosition, SpeakerSet, sound_for_pmove_event, sounds_for_trigger_event,
 };
+
+const EXPLOSION_SOUND: &str = "sounds/weapons/rocket_strong_explosion";
 
 const TEST_SOUND: &str = "sounds/menu/ok";
 
@@ -63,7 +65,7 @@ impl GameSound {
         // The stock packs ship no tele_out; reuse tele_in (reported once).
         system.add_fallback(SOUND_TELEPORT_OUT, SOUND_TELEPORT_IN);
         system.preload_builtin();
-        system.preload([TEST_SOUND]);
+        system.preload([TEST_SOUND, EXPLOSION_SOUND]);
         let speakers = SpeakerSet::from_entities(&bsp.parsed_entities);
         for warning in &speakers.warnings {
             eprintln!(
@@ -102,6 +104,22 @@ impl GameSound {
             for event in sounds_for_trigger_event(trigger, from, eye) {
                 self.system.handle_event(&event);
             }
+        }
+        self.print_reports();
+    }
+
+    /// Plays the strong rocket explosion at each origin (`EV_EXPLOSION2` in the legacy client).
+    pub fn play_explosions(&mut self, origins: &[[f32; 3]]) {
+        for &origin in origins {
+            self.system.handle_event(&SoundEvent::Play {
+                sound: SoundName::Path(EXPLOSION_SOUND.into()),
+                position: SoundPosition::World {
+                    origin,
+                    attenuation: ATTN_NORM,
+                },
+                volume: 1.0,
+                channel: SoundChannel::Auto,
+            });
         }
         self.print_reports();
     }

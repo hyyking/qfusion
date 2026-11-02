@@ -23,6 +23,8 @@ pub struct BombSession {
     /// Last accepted loadout choices (the script is authoritative).
     pub loadout: Loadout,
     pub hud: BombHud,
+    /// Origins of explosions since the last drain, for client-only sound and light effects.
+    pub explosions: Vec<[f32; 3]>,
 }
 
 impl BombSession {
@@ -37,6 +39,7 @@ impl BombSession {
             spectating: false,
             loadout: Loadout::default(),
             hud: BombHud::default(),
+            explosions: Vec::new(),
         })
     }
 
@@ -71,6 +74,11 @@ impl BombSession {
                             let yaw = event.float("yaw").unwrap_or(0.0) as f32;
                             walk.view_angles = [0.0, yaw, 0.0];
                             respawned = true;
+                        }
+                    }
+                    "explosion" => {
+                        if let Some(origin) = event.vec3("origin") {
+                            self.explosions.push(origin);
                         }
                     }
                     "round_won" | "match_won" | "bomb_planted" | "bomb_defused"
