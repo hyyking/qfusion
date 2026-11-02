@@ -5,9 +5,12 @@
 //! keeps slots stable and iterates in slot order, so no Bevy type or query order is
 //! observable. This is the storage that later joins the map entity world.
 
+use std::collections::BTreeMap;
+
 use bevy_ecs::prelude::*;
 
 use super::combat::{Player, Team};
+use super::host::Value;
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Slot(usize);
@@ -18,6 +21,10 @@ struct GamePlayer(Player);
 /// `set_movement_locked`: whether player movement input is frozen by the gametype.
 #[derive(Resource, Debug)]
 struct MovementLock(bool);
+
+/// Per-tick published HUD values, by slot.
+#[derive(Resource, Debug, Default)]
+struct HudState(BTreeMap<usize, BTreeMap<String, Value>>);
 
 #[derive(Debug)]
 pub struct Roster {
@@ -36,6 +43,7 @@ impl Roster {
     pub fn new() -> Self {
         let mut world = World::new();
         world.insert_resource(MovementLock(true));
+        world.insert_resource(HudState::default());
         Self {
             world,
             by_slot: Vec::new(),
@@ -75,6 +83,14 @@ impl Roster {
 
     pub fn movement_locked(&self) -> bool {
         self.world.resource::<MovementLock>().0
+    }
+
+    pub fn publish_hud(&mut self, slot: usize, values: BTreeMap<String, Value>) {
+        self.world.resource_mut::<HudState>().0.insert(slot, values);
+    }
+
+    pub fn hud(&self, slot: usize) -> Option<&BTreeMap<String, Value>> {
+        self.world.resource::<HudState>().0.get(&slot)
     }
 
     pub fn set_movement_locked(&mut self, locked: bool) {

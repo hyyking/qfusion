@@ -688,7 +688,21 @@ impl GameHost {
     pub fn tick(&mut self) -> Result<(), GameError> {
         self.game.core().now += TICK_MS;
         self.game.core().run_map();
-        self.call("tick", (self.game.clone(),)).map(drop)
+        self.call("tick", (self.game.clone(),)).map(drop)?;
+        self.publish_hud()
+    }
+
+    /// Recomputes every player's HUD values once per tick; readers get the published
+    /// copy so rendering never runs script code.
+    fn publish_hud(&mut self) -> Result<(), GameError> {
+        if !self.hooks.contains("hud") {
+            return Ok(());
+        }
+        for id in 0..self.player_count() {
+            let values = self.compute_hud(id)?;
+            self.game.core().roster.publish_hud(id, values);
+        }
+        Ok(())
     }
 
     pub fn add_player(&mut self, team: Team) -> Result<usize, GameError> {
@@ -784,8 +798,16 @@ impl GameHost {
         self.game.core().roster.len()
     }
 
-    /// Gametype-defined HUD values for one player (see the script's `hud` hook).
+    /// Gametype-defined HUD values for one player as published at the end of the last
+    /// tick (see the script's `hud` hook). Computed on demand before the first tick.
     pub fn hud(&mut self, id: usize) -> Result<BTreeMap<String, Value>, GameError> {
+        if let Some(values) = self.game.core().roster.hud(id) {
+            return Ok(values.clone());
+        }
+        self.compute_hud(id)
+    }
+
+    fn compute_hud(&mut self, id: usize) -> Result<BTreeMap<String, Value>, GameError> {
         let result = self.call("hud", (self.game.clone(), id as i64))?;
         let map = result.try_cast::<Map>().unwrap_or_default();
         Ok(map

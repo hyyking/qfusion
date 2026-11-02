@@ -182,6 +182,21 @@ fn entities_excluded_from_the_bomb_gametype_are_not_spawned() {
 }
 
 #[test]
+fn hud_is_published_once_per_tick() {
+    let mut host = host(1);
+    let id = host.add_player(Team::Alpha).unwrap();
+    host.tick().unwrap();
+    let before = host.hud(id).unwrap();
+    assert_eq!(before.get("ticks"), Some(&Value::Int(1)));
+    host.damage(id, None, 150.0).unwrap();
+    assert_eq!(host.hud(id).unwrap(), before, "stale until the next tick");
+    host.tick().unwrap();
+    let after = host.hud(id).unwrap();
+    assert_eq!(after.get("ticks"), Some(&Value::Int(2)));
+    assert_ne!(after.get("health"), before.get("health"));
+}
+
+#[test]
 fn script_errors_surface_as_results() {
     let error = GameHost::new(SCRIPT, Arc::new(Floor), &[], &[], None, 1)
         .expect_err("init throws without spawns");
