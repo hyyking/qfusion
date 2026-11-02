@@ -17,7 +17,7 @@ bomb sites from the map's entities by classname, so it is not tied to `wbomb1`.
 - Client (`qf-client::bomb`): runs the host beside the walking player, teleports on `spawn`
   events, locks movement during the round countdown / when dead, draws the HUD from
   `GameHost::hud`. Run: `qf-client <pk3> --entry maps/wbomb1.bsp [--team alpha|beta] [--freeplay]`.
-  Keys: G drop bomb, K suicide, T switch team.
+  Keys: G drop bomb, K suicide, M team menu (Alpha / Beta / Spectate = noclip, kept out of the round by re-suiciding), Esc menu.
 
 ## Legacy behavior inventory (`source/server/game/progs/gametypes/bomb/*.as`)
 

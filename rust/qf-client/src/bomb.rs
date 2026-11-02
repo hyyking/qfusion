@@ -10,6 +10,7 @@ use qf_engine::simulation::pmove::{PMFEAT_DASH, PMFEAT_JUMP, PMFEAT_WALLJUMP, Pm
 use qf_engine::simulation::walk::{ModeSimulation, MovementMode};
 
 use crate::hud::{Anchor, Canvas, HAnchor, Rect, Screen, VAnchor, text_size};
+use crate::menu::TeamChoice;
 
 const LOCKED_SPEED: i32 = 100;
 
@@ -17,6 +18,7 @@ pub struct BombSession {
     host: GameHost,
     player: usize,
     unlocked_stats: Option<PmoveStats>,
+    spectating: bool,
     pub hud: BombHud,
 }
 
@@ -29,6 +31,7 @@ impl BombSession {
             host,
             player,
             unlocked_stats: None,
+            spectating: false,
             hud: BombHud::default(),
         })
     }
@@ -73,6 +76,10 @@ impl BombSession {
             }
         }
         self.hud = BombHud::from_values(&self.host.hud(self.player)?);
+        if self.spectating && self.hud.alive {
+            // The gametype has no spectator state; keep the player out of the round.
+            self.command("suicide", "");
+        }
         Ok(respawned)
     }
 
@@ -106,11 +113,36 @@ impl BombSession {
         }
     }
 
-    pub fn switch_team(&mut self) {
-        let team = match self.host.player(self.player).team {
-            Team::Alpha => Team::Beta,
-            Team::Beta => Team::Alpha,
+    pub fn team_choice(&self) -> TeamChoice {
+        if self.spectating {
+            return TeamChoice::Spectator;
+        }
+        match self.host.player(self.player).team {
+            Team::Alpha => TeamChoice::Alpha,
+            Team::Beta => TeamChoice::Beta,
+        }
+    }
+
+    /// Joins `choice`. Spectating switches the player to noclip; joining a team returns to walking.
+    pub fn set_team(&mut self, choice: TeamChoice, simulation: &mut ModeSimulation) {
+        if choice == self.team_choice() {
+            return;
+        }
+        let team = match choice {
+            TeamChoice::Alpha => Team::Alpha,
+            TeamChoice::Beta => Team::Beta,
+            TeamChoice::Spectator => {
+                self.spectating = true;
+                if simulation.mode().is_walking() {
+                    simulation.toggle_mode();
+                }
+                return;
+            }
         };
+        self.spectating = false;
+        if !simulation.mode().is_walking() {
+            simulation.toggle_mode();
+        }
         if let Err(error) = self.host.change_team(self.player, team) {
             eprintln!("team change: {error}");
         }

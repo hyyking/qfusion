@@ -276,6 +276,7 @@ impl App {
     }
 
     fn open_menu(&mut self) {
+        self.menu = menu::Menu::pause();
         self.menu.open();
         self.set_mouse_grab(false);
     }
@@ -287,6 +288,13 @@ impl App {
                 self.set_mouse_grab(true);
             }
             menu::UiAction::Quit => event_loop.exit(),
+            menu::UiAction::SetTeam(choice) => {
+                if let Some(bomb) = &mut self.bomb {
+                    bomb.set_team(choice, &mut self.simulation);
+                }
+                self.menu.close();
+                self.set_mouse_grab(true);
+            }
             menu::UiAction::Command { name, args } => {
                 if let Some(bomb) = &mut self.bomb {
                     bomb.command(&name, &args);
@@ -463,9 +471,11 @@ impl ApplicationHandler for App {
                                 bomb.command("suicide", "");
                             }
                         }
-                        Key::Character(ref key) if key.eq_ignore_ascii_case("t") => {
-                            if let Some(bomb) = &mut self.bomb {
-                                bomb.switch_team();
+                        Key::Character(ref key) if key.eq_ignore_ascii_case("m") => {
+                            if let Some(bomb) = &self.bomb {
+                                self.menu = menu::Menu::team(bomb.team_choice());
+                                self.menu.open();
+                                self.set_mouse_grab(false);
                             }
                         }
                         _ => {}
