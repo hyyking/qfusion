@@ -8,6 +8,9 @@ struct View {
 struct Instance {
     model: mat4x4<f32>,
     tint: vec4<f32>,
+    light_dir: vec4<f32>,
+    ambient: vec4<f32>,
+    diffuse: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> view: View;
@@ -38,7 +41,8 @@ fn vs_main(in: VsIn) -> VsOut {
 
 fn shade(in: VsOut) -> vec4<f32> {
     let texel = textureSample(tex, tex_sampler, in.uv);
-    let light = 0.55 + 0.45 * max(dot(normalize(in.normal), normalize(vec3<f32>(0.4, 0.3, 0.85))), 0.0);
+    let facing = max(dot(normalize(in.normal), inst.light_dir.xyz), 0.0);
+    let light = inst.ambient.rgb + inst.diffuse.rgb * facing;
     return vec4<f32>(texel.rgb * inst.tint.rgb * light, texel.a * inst.tint.a);
 }
 

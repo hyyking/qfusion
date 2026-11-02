@@ -8,6 +8,7 @@ use std::fmt;
 
 pub mod collision;
 pub mod entities;
+pub mod lightgrid;
 pub mod lightmap;
 pub mod patch;
 pub use collision::{ModelPose, Trace, TraceError, TracePlane};
@@ -45,6 +46,7 @@ const L_VERTEXES: usize = 10;
 const L_ELEMENTS: usize = 11;
 const L_FOGS: usize = 12;
 const L_FACES: usize = 13;
+const L_LIGHTGRID: usize = 15;
 
 pub const FACETYPE_PLANAR: i32 = 1;
 pub const FACETYPE_PATCH: i32 = 2;
@@ -220,6 +222,8 @@ pub struct Bsp {
     pub faces: Vec<Face>,
     /// Packed style-0 lightmaps (empty when the map has none).
     pub lightmaps: LightmapAtlas,
+    /// Baked light grid for lighting models (empty when the map has none).
+    pub lightgrid: lightgrid::LightGrid,
     /// Collision facets of solid patch faces (legacy `CM_CreatePatch`).
     pub patches: Vec<patch::PatchCollide>,
     /// Index into `patches` for each face, if it has collision data.
@@ -419,7 +423,7 @@ impl Bsp {
         }
         let n = sized(L_MODELS, 40)?;
         let r = Rd(slice(L_MODELS));
-        let models = (0..n)
+        let models: Vec<Model> = (0..n)
             .map(|i| {
                 let o = i * 40;
                 Model {
@@ -490,6 +494,24 @@ impl Bsp {
             },
             faces.iter().map(|f: &Face| f.lm_texnum),
         );
+        let lightgrid = {
+            let (mins, maxs) = models
+                .first()
+                .map_or(([0.0; 3], [0.0; 3]), |m| (m.mins, m.maxs));
+            let grid_size = parsed_entities
+                .iter()
+                .find(|e| e.get("classname") == Some("worldspawn"))
+                .and_then(|e| e.get("gridsize"))
+                .and_then(|text| {
+                    let v: Vec<f32> = text
+                        .split_ascii_whitespace()
+                        .map(str::parse)
+                        .collect::<Result<_, _>>()
+                        .ok()?;
+                    <[f32; 3]>::try_from(v).ok()
+                });
+            lightgrid::LightGrid::parse(slice(L_LIGHTGRID), mins, maxs, grid_size)
+        };
         let mut bsp = Bsp {
             format,
             magic: magic_s,
@@ -510,6 +532,7 @@ impl Bsp {
             elements,
             faces,
             lightmaps,
+            lightgrid,
             patches: Vec::new(),
             face_patch: Vec::new(),
             counts,
@@ -517,7 +540,7 @@ impl Bsp {
         };
         bsp.validate()?;
         bsp.build_patch_collision();
-        for (i, &lump_name) in LUMP_NAMES.iter().take(nlumps).enumerate().skip(15) {
+        for (i, &lump_name) in LUMP_NAMES.iter().take(nlumps).enumerate().skip(16) {
             if bsp.lumps[i].len > 0 {
                 bsp.diagnostics.push(format!(
                     "lump {} ({}) present ({} bytes): preserved as offset/len only, not decoded",

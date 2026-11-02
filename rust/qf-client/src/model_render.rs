@@ -6,6 +6,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use qf_engine::content::bsp::entities::Entity;
+use qf_engine::content::bsp::lightgrid::{GridLight, LightGrid};
 use qf_engine::content::image::{Rgba8Image, load_mip_chain};
 use qf_engine::content::md3::{self, Md3Surface};
 use qf_engine::content::shader::{Blend, MapSource, Shader};
@@ -17,6 +18,8 @@ use crate::world::{Content, DEPTH_FORMAT, blend_factor, upload_texture};
 const SPIN_DEG_PER_SEC: f32 = 90.0;
 const BOB_AMPLITUDE: f32 = 3.0;
 const BOB_HZ: f32 = 0.5;
+/// Items rest on the floor; sampling slightly above avoids the cell below the floor.
+const LIGHT_SAMPLE_HEIGHT: f32 = 16.0;
 
 /// A prop to draw: an md3 at a position.
 #[derive(Clone, Debug)]
@@ -28,6 +31,8 @@ pub struct Prop {
     pub yaw_degrees: f32,
     /// Items spin and bob; flags and indicators stand still.
     pub animated: bool,
+    /// Baked light at the prop, from the map's light grid.
+    pub light: GridLight,
 }
 
 impl Prop {
@@ -41,12 +46,13 @@ impl Prop {
             origin,
             yaw_degrees,
             animated,
+            light: GridLight::default(),
         })
     }
 }
 
 /// Props for every entity of a map lump that has a world model.
-pub fn props_from_entities(lump: &[Entity]) -> Vec<Prop> {
+pub fn props_from_entities(lump: &[Entity], grid: &LightGrid) -> Vec<Prop> {
     lump.iter()
         .enumerate()
         .filter_map(|(entity, e)| {
@@ -57,9 +63,14 @@ pub fn props_from_entities(lump: &[Entity]) -> Vec<Prop> {
                 .unwrap_or(0.0);
             let mut prop = Prop::for_classname(e.get("classname")?, origin, yaw)?;
             prop.entity = entity;
+            prop.light = grid.sample([origin[0], origin[1], origin[2] + LIGHT_SAMPLE_HEIGHT]);
             Some(prop)
         })
         .collect()
+}
+
+fn point4(v: [f32; 3]) -> [f32; 4] {
+    [v[0], v[1], v[2], 0.0]
 }
 
 fn parse_floats<const N: usize>(text: &str) -> Option<[f32; N]> {
@@ -92,6 +103,9 @@ struct ViewUniform {
 struct InstanceUniform {
     model: Mat4,
     tint: [f32; 4],
+    light_dir: [f32; 4],
+    ambient: [f32; 4],
+    diffuse: [f32; 4],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -335,6 +349,9 @@ impl ModelRenderer {
             let u = InstanceUniform {
                 model: prop_matrix(prop, time),
                 tint: [1.0; 4],
+                light_dir: point4(prop.light.direction),
+                ambient: point4(prop.light.ambient),
+                diffuse: point4(prop.light.diffuse),
             };
             let at = i * stride;
             bytes[at..at + std::mem::size_of::<InstanceUniform>()]

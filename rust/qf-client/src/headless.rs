@@ -33,7 +33,7 @@ pub fn screenshot(
         &queue,
         FORMAT,
         content,
-        props_from_entities(&bsp.parsed_entities),
+        props_from_entities(&bsp.parsed_entities, &bsp.lightgrid),
     );
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("screenshot"),
