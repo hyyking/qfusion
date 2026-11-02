@@ -848,7 +848,15 @@ fn hud(g, id) {
     if this.bomb.site >= 0 {
         letter = this.sites[this.bomb.site].letter;
     }
+    let plant_letter = "";
+    if this.bomb.carrier == id && this.bomb.state == "carried" {
+        let s = this.plant_site(g, id);
+        if s >= 0 {
+            plant_letter = this.sites[s].letter;
+        }
+    }
     #{
+        plant_site: plant_letter,
         match_state: this.match_state,
         round_state: this.round_state,
         round: this.round_count,
